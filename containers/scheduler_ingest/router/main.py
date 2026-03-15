@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from libs.config.loader import load_yaml, require
+from libs.config.loader import load_yaml
 from libs.ipc.bus import create_producer, create_consumer
 
 from .service import RouterService, load_router_config

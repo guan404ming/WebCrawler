@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Iterable
 
 
 def round_robin_mix(per_shard_urls: dict[int, list[str]]) -> list[str]:

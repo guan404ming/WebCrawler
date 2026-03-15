@@ -1,5 +1,4 @@
 from sqlalchemy import Column, BigInteger, DateTime, String
-from sqlalchemy.orm import declared_attr
 from sqlalchemy.sql import func
 
 from libs.db.base import Base

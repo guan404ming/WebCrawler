@@ -4,7 +4,6 @@ from __future__ import annotations
 import tempfile
 import time
 import threading
-import statistics
 
 from libs.ipc.bus import create_producer, create_consumer
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 
 from libs.config.loader import load_yaml, require
+from libs.ipc.bus import create_consumer
+
 from .service import StatsAggregatorService
 
 
@@ -12,14 +14,11 @@ def main():
     args = ap.parse_args()
 
     raw = load_yaml(args.config)
-    stats = require(raw, "stats")
     pg = require(raw, "postgres")
+    ipc = raw.get("ipc", {})
 
-    stats_dir = require(stats, "stats_dir")
-    bad_dir = require(stats, "bad_dir")
-    postgres_dsn = require(pg, "dsn")
-
-    svc = StatsAggregatorService(stats_dir, bad_dir, postgres_dsn)
+    consumer = create_consumer(ipc, group="stats", consumer_name="stats_00")
+    svc = StatsAggregatorService(consumer, str(require(pg, "dsn")))
     svc.run_forever()
 
 

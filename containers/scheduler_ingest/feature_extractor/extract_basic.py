@@ -9,7 +9,7 @@ def extract_basic(rec: dict):
         "shard_id": int(rec.get("shard_id")),
         "domain_id": int(rec.get("domain_id")),
         "fetched_at": datetime.fromisoformat(rec["fetched_at"]) if rec.get("fetched_at") else datetime.now(timezone.utc),
-        "content_length": len(rec.get("content", "")),
+        "content_length": rec.get("content_length", 0),
         "content_hash": rec.get("content_hash"),
         "num_links": len(rec.get("outlinks", [])),
     }

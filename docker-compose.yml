@@ -26,6 +26,18 @@ services:
         max-size: "50m"
         max-file: "10"
 
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
+
   scheduler_control:
     build:
       context: .
@@ -33,6 +45,9 @@ services:
     container_name: scheduler_control
     init: true
     restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
     volumes:
       - ./:/app
       - /data/ipc:/data/ipc
@@ -49,6 +64,9 @@ services:
     container_name: scheduler_ingest
     init: true
     restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
     volumes:
       - ./:/app
       - /data/ipc:/data/ipc
@@ -64,6 +82,8 @@ services:
       dockerfile: containers/crawler/Dockerfile
     container_name: crawler
     init: true
+    depends_on:
+      - redis
     dns:
       - 8.8.8.8
       - 1.1.1.1

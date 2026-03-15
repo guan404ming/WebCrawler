@@ -11,10 +11,6 @@ import argparse
 from sqlalchemy import create_engine, text
 
 from libs.db.base import Base
-from libs.db.models.domain.state import DomainState
-from libs.db.models.domain.stats_daily import DomainStatsDaily
-from libs.db.models.summary.daily import SummaryDaily
-from libs.db.models.link.url_link import UrlLink
 from libs.db.sharding.table_factory import (
     url_state_current_table,
     url_state_history_table,

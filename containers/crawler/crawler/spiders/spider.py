@@ -122,7 +122,7 @@ class HtmlSpider(scrapy.Spider):
         elif failure.check(IgnoreRequest):
             item["fail_reason"] = f"IgnoreRequest {failure.getErrorMessage()}"
             if "exceeded DOWNLOAD_MAXSIZE" in item["fail_reason"]:
-                item["fail_reason"] = f"IgnoreRequest exceeded DOWNLOAD_MAXSIZE"
+                item["fail_reason"] = "IgnoreRequest exceeded DOWNLOAD_MAXSIZE"
 
         yield item
 

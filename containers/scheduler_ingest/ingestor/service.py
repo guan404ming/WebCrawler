@@ -6,7 +6,7 @@ from collections import defaultdict
 from libs.ipc.bus import MessageConsumer
 from libs.stats.delta_writer import StatsDeltaWriter
 
-from .db_ops import IngestDB, IngestResult
+from .db_ops import IngestDB
 
 
 class IngestService:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
-from libs.ipc.bus import MessageProducer, create_producer
+from libs.ipc.bus import create_producer
 
 
 def _now_iso() -> str:
@@ -30,15 +31,25 @@ class CrawlResultPipeline:
         self.producer = create_producer(self.ipc_config)
 
     def process_item(self, item, spider):
+        content = item.get("content")
         rec = {
             "url": item.get("url"),
             "domain": item.get("domain"),
             "fetched_at": _now_iso(),
-            "status": "ok" if item.get("content") else "fail",
+            "status": "ok" if content else "fail",
             "fail_reason": item.get("fail_reason"),
-            "content": item.get("content"),
+            "content_length": len(content) if content else 0,
             "outlinks": item.get("outlinks", []),
         }
 
-        self.producer.send("crawl_result", self.crawler_id, rec)
+        for attempt in range(5):
+            try:
+                self.producer.send("crawl_result", self.crawler_id, rec)
+                return item
+            except Exception:
+                if attempt == 4:
+                    raise
+                self.producer = create_producer(self.ipc_config)
+                time.sleep(0.1 * (2 ** attempt))
+
         return item

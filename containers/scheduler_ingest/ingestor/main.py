@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from libs.config.loader import load_yaml, require
-from libs.ipc.bus import create_consumer
+from libs.ipc.bus import create_consumer, create_producer
 from libs.stats.delta_writer import StatsDeltaWriter
 
 from .service import IngestService
@@ -19,7 +19,6 @@ def main():
     args = ap.parse_args()
 
     raw = load_yaml(args.config)
-    ingestor_cfg = require(raw, "ingestor")
     pg = require(raw, "postgres")
     ipc = raw.get("ipc", {})
 
@@ -41,8 +40,9 @@ def main():
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
     consumer = create_consumer(ipc, group="ingestor", consumer_name=f"ingestor_{args.ingestor_id:02d}")
+    producer = create_producer(ipc)
     db = IngestDB(Session)
-    stats = StatsDeltaWriter(require(ingestor_cfg, "stats_dir"))
+    stats = StatsDeltaWriter(producer)
 
     svc = IngestService(args.ingestor_id, db, consumer, stats)
     svc.run_forever()

@@ -3,9 +3,8 @@ from __future__ import annotations
 from datetime import datetime, date
 from typing import Dict, Any
 
-from sqlalchemy import func, select, text, Integer
+from sqlalchemy import func, text, Integer
 from sqlalchemy.orm import Session
-from sqlalchemy.dialects.postgresql import insert
 
 from libs.db import SummaryDaily, DomainStatsDaily, DomainState
 

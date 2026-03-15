@@ -1,7 +1,6 @@
 from functools import lru_cache
 from typing import Type
 
-from libs.db.base import Base
 from libs.db.models.url.current import UrlStateCurrent
 from libs.db.models.url.history import UrlStateHistory
 from libs.db.models.url.counter import UrlEventCounter

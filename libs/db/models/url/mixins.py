@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime
 from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
-    Date,
     DateTime,
     Float,
     Integer,
-    String,
-    text
+    String
 )
-from sqlalchemy.dialects.postgresql import BIT
 from sqlalchemy.sql import func
 
 

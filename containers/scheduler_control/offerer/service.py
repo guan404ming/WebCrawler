@@ -32,8 +32,6 @@ class OffererConfig:
     batch_size: int
     per_shard_select_cap: int
 
-    stats_dir: str
-
 
 class OffererService:
     def __init__(
@@ -42,12 +40,13 @@ class OffererService:
         deriv: OffererDerivation,
         selector: SelectionStrategy,
         producer: MessageProducer,
+        stats: StatsDeltaWriter,
     ):
         self.cfg = cfg
         self.deriv = deriv
         self.selector = selector
         self.producer = producer
-        self.stats = StatsDeltaWriter(stats_dir=cfg.stats_dir)
+        self.stats = stats
 
     def _refill_once_if_needed(self) -> dict:
         offerer_id = self.cfg.offerer_id

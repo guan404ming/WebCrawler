@@ -73,7 +73,7 @@ class RouterService:
                         domain_id, domain_score = resolver.ensure_and_get(domain, shard_id)
                 self._domain_cache[domain] = (domain_id, domain_score)
                 return domain_id, domain_score
-            except (OperationalError, InterfaceError) as e:
+            except (OperationalError, InterfaceError):
                 if attempt == 2:
                     raise
                 try:
@@ -112,7 +112,7 @@ class RouterService:
             "status": status,
             "fetched_at": rec.get("fetched_at"),
             "fail_reason": rec.get("fail_reason"),
-            # "content": content,
+            "content_length": rec.get("content_length", 0),
             "outlinks": new_outlinks,
             "shard_id": shard_id,
             "domain_id": domain_id,

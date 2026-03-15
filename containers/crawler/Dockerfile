@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir scrapy requests tldextract
+RUN pip install --no-cache-dir scrapy requests tldextract redis
 
 COPY containers/crawler/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 

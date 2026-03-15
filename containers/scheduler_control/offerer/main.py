@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from libs.config.loader import load_yaml, require
 from libs.ipc.bus import create_producer
+from libs.stats.delta_writer import StatsDeltaWriter
 
 from .service import OffererDerivation, OffererConfig, OffererService
 from .selection.example_strategy import ExampleStrategy
@@ -61,10 +62,10 @@ def main() -> None:
         low_watermark_batches=int(offerer.get("low_watermark_batches", 20)),
         batch_size=int(offerer.get("batch_size", 512)),
         per_shard_select_cap=int(offerer.get("per_shard_select_cap", 4096)),
-        stats_dir=str(offerer.get("stats_dir", "/data/ipc/stats")),
     )
 
-    OffererService(cfg, deriv, selector, producer).run_forever()
+    stats = StatsDeltaWriter(producer)
+    OffererService(cfg, deriv, selector, producer, stats).run_forever()
 
 
 if __name__ == "__main__":

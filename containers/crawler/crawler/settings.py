@@ -39,4 +39,4 @@ ITEM_PIPELINES = {
 }
 
 # IPC config: override via environment or keep default filesystem
-IPC_CONFIG = {"backend": "filesystem", "base_dir": "/data/ipc"}
+IPC_CONFIG = {"backend": "redis", "url": "redis://redis:6379/0"}

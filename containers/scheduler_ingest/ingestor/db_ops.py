@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Optional, Tuple
 
 from sqlalchemy import text, insert
 from sqlalchemy.orm import sessionmaker
@@ -47,8 +46,6 @@ class IngestDB:
         status = rec["status"]
         fetched_at = datetime.fromisoformat(rec["fetched_at"]) if rec.get("fetched_at") else datetime.now(timezone.utc)
         fail_reason = rec.get("fail_reason")
-        #content = rec.get("content")
-        outlinks = rec.get("outlinks", [])
         content_hash = rec.get("content_hash")
 
         tcur = self._tcur(shard_id)

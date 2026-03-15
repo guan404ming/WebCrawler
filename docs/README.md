@@ -14,3 +14,4 @@ This documentation set describes the architecture implemented in this repository
 3. [03-data-flow-and-ipc.md](./03-data-flow-and-ipc.md)
 4. [04-sql-schema-design.md](./04-sql-schema-design.md)
 5. [05-docker-settings-and-deployment.md](./05-docker-settings-and-deployment.md)
+6. [06-ipc-backend-comparison.md](./06-ipc-backend-comparison.md)

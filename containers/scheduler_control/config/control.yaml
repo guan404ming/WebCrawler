@@ -20,8 +20,8 @@ offerer:
 
 
 ipc:
-  backend: "filesystem"
-  base_dir: "/data/ipc"
+  backend: "redis"
+  url: "redis://redis:6379/0"
 
 postgres:
   dsn: "postgresql+psycopg2://crawler:crawler@172.16.191.1:5432/crawlerdb"

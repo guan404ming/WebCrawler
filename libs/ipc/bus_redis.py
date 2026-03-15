@@ -15,7 +15,12 @@ from .bus import MessageConsumer, MessageProducer
 
 
 def make_redis_client(url: str = "redis://redis:6379/0") -> redis.Redis:
-    return redis.Redis.from_url(url, decode_responses=False)
+    pool = redis.ConnectionPool.from_url(url, max_connections=4)
+    return redis.Redis(
+        connection_pool=pool,
+        health_check_interval=10,
+        retry_on_error=[redis.ConnectionError, redis.TimeoutError],
+    )
 
 
 class RedisProducer(MessageProducer):
@@ -40,7 +45,7 @@ class RedisProducer(MessageProducer):
         pipe.execute()
 
     def close(self) -> None:
-        pass
+        self.client.close()
 
 
 class RedisConsumer(MessageConsumer):
@@ -90,4 +95,4 @@ class RedisConsumer(MessageConsumer):
         pass
 
     def close(self) -> None:
-        pass
+        self.client.close()
