@@ -1,58 +1,35 @@
 from __future__ import annotations
 
-import uuid
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict
 
-from libs.ipc.jsonio import append_jsonl
-from libs.ipc.folder_reader import current_interval
+from libs.ipc.bus import MessageProducer, create_producer
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
-class JsonPipeline:
-    """
-    Writes each item into:
-      {base_dir}/{date}/{time}/{uuid}.json
 
-    base_dir = RESULT_DIR_TEMPLATE.format(id=crawler_id)
-
-    date = YYYYMMDD
-    time = HHMM (floored to interval)
+class CrawlResultPipeline:
     """
-    def __init__(self, result_dir_template: str, interval_minutes: int):
-        self.result_dir_template = result_dir_template
-        self.interval_minutes = interval_minutes
-        self.base_dir = None
+    Sends crawl results to the IPC bus.
+    Backend (filesystem or redis) is determined by config.
+    """
+
+    def __init__(self, ipc_config: dict):
+        self.ipc_config = ipc_config
+        self.producer = None
+        self.crawler_id = None
 
     @classmethod
     def from_crawler(cls, crawler):
-        settings = crawler.settings
-
-        tmpl = settings.get("RESULT_DIR_TEMPLATE")
-        interval_minutes = int(settings.getint("INTERVAL_MINUTES", 5))
-
-        pipe = cls(tmpl, interval_minutes)
-        return pipe
+        ipc_config = crawler.settings.get("IPC_CONFIG", {})
+        return cls(ipc_config)
 
     def open_spider(self, spider):
-        self.base_dir = Path(self.result_dir_template.format(id=spider.crawler_id))
-        self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.crawler_id = spider.crawler_id
+        self.producer = create_producer(self.ipc_config)
 
     def process_item(self, item, spider):
-        if self.base_dir is None:
-            raise RuntimeError("Pipeline not initialized (spider_opened not called)")
-
-        date, t = current_interval(self.interval_minutes)
-
-        out_dir = self.base_dir / date / t
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        path = out_dir / f"{datetime.now(timezone.utc).strftime('%H%M')}.jsonl"
-
         rec = {
             "url": item.get("url"),
             "domain": item.get("domain"),
@@ -63,6 +40,5 @@ class JsonPipeline:
             "outlinks": item.get("outlinks", []),
         }
 
-        append_jsonl(path, rec)
+        self.producer.send("crawl_result", self.crawler_id, rec)
         return item
-

@@ -1,43 +1,36 @@
 from __future__ import annotations
-from pathlib import Path
+
+import time
 from collections import defaultdict
 
-from libs.ipc.jsonio import read_json, read_jsonl
+from libs.ipc.bus import MessageConsumer
 from libs.stats.delta_writer import StatsDeltaWriter
 
 from .db_ops import IngestDB, IngestResult
 
 
 class IngestService:
-    def __init__(self, ingestor_id: int, db: IngestDB, stats: StatsDeltaWriter):
+    def __init__(self, ingestor_id: int, db: IngestDB, consumer: MessageConsumer, stats: StatsDeltaWriter):
         self.ingestor_id = ingestor_id
         self.db = db
+        self.consumer = consumer
         self.stats = stats
 
-    def process_folder(self, folder: Path):
-        print(f"[ingestor {self.ingestor_id:02d}] start processing '{folder}'", flush=True)
-        file_cnt = 0
-        counters = defaultdict(int)
-        domains = {}
-
-        for f in folder.iterdir():
-            if not f.is_file():
+    def run_forever(self) -> None:
+        print(f"[ingestor {self.ingestor_id:02d}] started", flush=True)
+        while True:
+            messages = self.consumer.poll("ingest_input", self.ingestor_id, max_messages=100)
+            if not messages:
+                time.sleep(2)
                 continue
 
-            if f.suffix == ".json":
-                recs = [read_json(f)]
-                file_cnt += 1
-            elif f.suffix == ".jsonl":
-                recs = read_jsonl(f)
-                file_cnt += 1
-            else:
-                continue
-            
-            for rec in recs:
+            counters = defaultdict(int)
+            domains = {}
+
+            for rec in messages:
                 try:
                     if rec.get("status") == "new":
                         if self.db.process_link(rec):
-                            # discover new link
                             counters["new_links"] += 1
                         continue
 
@@ -66,11 +59,6 @@ class IngestService:
                     counters["error_count"] += 1
                     counters["ingest_error"] += 1
 
-        domains.pop(None, None)
-        self.stats.write(
-            source="ingestor",
-            counters=counters,
-            domains=domains
-        )
-        print(f"[ingestor {self.ingestor_id:02d}] finish processing '{folder}', {file_cnt} files", flush=True)
-
+            domains.pop(None, None)
+            self.stats.write(source="ingestor", counters=counters, domains=domains)
+            print(f"[ingestor {self.ingestor_id:02d}] processed {len(messages)} records", flush=True)

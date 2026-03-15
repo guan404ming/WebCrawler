@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import time
-from datetime import datetime, timezone
-from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -12,9 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import OperationalError, InterfaceError
 
 from libs.config.loader import load_yaml, require
-from libs.ipc.jsonio import read_json, read_jsonl, append_jsonl
-from libs.stats.delta_writer import StatsDeltaWriter
-from libs.ipc.folder_reader import current_interval
+from libs.ipc.bus import MessageProducer, MessageConsumer
 
 from .routing import ShardRouter
 from .domain_resolver import DomainResolver
@@ -23,29 +19,25 @@ from .domain_resolver import DomainResolver
 def sha1_hex(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8", errors="replace")).hexdigest()
 
+
 @dataclass(frozen=True)
 class RouterConfig:
     router_id: int
 
-    crawler_dir_template: str
-    ingestor_dir_template: str
-    progress_template: str
-    stats_dir: str
-
-    interval_minutes: int
-    scan_sleep_minutes: int
-
     num_shards: int
     shards_per_ingestor: int
+    interval_minutes: int
+    poll_interval_sec: int
 
     domain_overrides: Dict[str, int]
-
     postgres_dsn: str
 
 
 class RouterService:
-    def __init__(self, cfg: RouterConfig):
+    def __init__(self, cfg: RouterConfig, consumer: MessageConsumer, producer: MessageProducer):
         self.cfg = cfg
+        self.consumer = consumer
+        self.producer = producer
         self.sharder = ShardRouter(
             num_shards=self.cfg.num_shards,
             shards_per_ingestor=self.cfg.shards_per_ingestor,
@@ -67,108 +59,69 @@ class RouterService:
             },
         )
         self.Session = sessionmaker(bind=self.engine, autoflush=False, autocommit=False, future=True)
-        self.stats = StatsDeltaWriter(self.cfg.stats_dir)
+        self._domain_cache: dict[str, tuple[int, float]] = {}
 
-    def _out_dir(self, ingestor_id: int) -> Path:
-        base = Path(self.cfg.ingestor_dir_template.format(id=ingestor_id))
-        date, time = current_interval(self.cfg.interval_minutes)
-        return base / date / time
+    def _resolve_domain(self, domain: str, shard_id: int) -> tuple[int, float]:
+        if domain in self._domain_cache:
+            return self._domain_cache[domain]
 
-    def process_folder(self, folder: Path) -> None:
-        """
-        Read all json files under folder; write transformed json to ingestor dirs.
-        """
-        print(f"[router {self.cfg.router_id:02d}] start processing '{folder}'", flush=True)
-        error = 0
-        file_cnt = 0
+        for attempt in range(3):
+            try:
+                with self.Session() as sess:
+                    resolver = DomainResolver(sess)
+                    with sess.begin():
+                        domain_id, domain_score = resolver.ensure_and_get(domain, shard_id)
+                self._domain_cache[domain] = (domain_id, domain_score)
+                return domain_id, domain_score
+            except (OperationalError, InterfaceError) as e:
+                if attempt == 2:
+                    raise
+                try:
+                    self.engine.dispose()
+                except Exception:
+                    pass
+                time.sleep(0.2 * (2 ** attempt))
 
-        for f in folder.iterdir():
-            if not f.is_file():
-                continue
+    def _process_record(self, rec: dict) -> None:
+        domain = rec.get("domain")
+        status = rec.get("status")
+        content = rec.get("content")
+        outlinks = rec.get("outlinks", [])
 
-            if f.suffix == ".json":
-                recs = [read_json(f)]
-                file_cnt += 1
-            elif f.suffix == ".jsonl":
-                recs = read_jsonl(f)
-                file_cnt += 1
-            else:
-                continue
+        shard_id = self.sharder.domain_to_shard(domain)
+        ingestor_id = self.sharder.shard_to_ingestor(shard_id)
 
-            for rec in recs:
-                domain = rec.get("domain")
-                status = rec.get("status")  # "ok"/"fail"
-                content = rec.get("content")
-                outlinks = rec.get("outlinks", [])
+        content_hash = None
+        if status == "ok" and isinstance(content, str):
+            content_hash = sha1_hex(content)
 
-                shard_id = self.sharder.domain_to_shard(domain)
-                ingestor_id = self.sharder.shard_to_ingestor(shard_id)
+        try:
+            domain_id, _ = self._resolve_domain(domain, shard_id)
+        except Exception as e:
+            print(f"[router {self.cfg.router_id:02d}] domain resolve error {domain}: {e}", flush=True)
+            return
 
-                content_hash = None
-                if status == "ok" and isinstance(content, str):
-                    content_hash = sha1_hex(content)
+        new_outlinks = []
+        for link in outlinks:
+            processed = self._process_link(link)
+            if processed:
+                new_outlinks.append(processed)
 
-                for attempt in range(3):
-                    try:
-                        with self.Session() as sess:
-                            domain_resolver = DomainResolver(sess)
-                            with sess.begin():
-                                # resolve domain_id from DB (insert if missing)
-                                domain_id, _ = domain_resolver.ensure_and_get(domain, shard_id)
+        out = {
+            "url": rec.get("url"),
+            "status": status,
+            "fetched_at": rec.get("fetched_at"),
+            "fail_reason": rec.get("fail_reason"),
+            # "content": content,
+            "outlinks": new_outlinks,
+            "shard_id": shard_id,
+            "domain_id": domain_id,
+            "content_hash": content_hash,
+        }
 
-                                new_outlinks = []
-                                for link in outlinks:
-                                    l = self._process_link(domain_resolver, link)
-                                    if l:
-                                        new_outlinks.append(l)
+        self.producer.send("ingest_input", ingestor_id, out)
 
-                        out = {
-                            "url": rec.get("url"),
-                            "status": status,
-                            "fetched_at": rec.get("fetched_at"),
-                            "fail_reason": rec.get("fail_reason"),
-                            "content": content,
-                            "outlinks": new_outlinks,
-                            "shard_id": shard_id,
-                            "domain_id": domain_id,
-                            "content_hash": content_hash,
-                        }
-
-                        out_dir = self._out_dir(ingestor_id)
-                        out_dir.mkdir(parents=True, exist_ok=True)
-                        out_path = out_dir / f"{datetime.now(timezone.utc).strftime('%H%M')}_router{self.cfg.router_id:02d}.jsonl"
-                        append_jsonl(out_path, out)
-                        break # success
-
-                    except (OperationalError, InterfaceError) as e:
-                        # connection reset / server closed / broken pipe
-                        if attempt == 2:
-                            print(f"[router {self.cfg.router_id:02d}] db error {domain}: {e}", flush=True)
-                            error += 1
-                            break
-
-                        try:
-                            self.engine.dispose()
-                        except Exception:
-                            pass
-                        time.sleep(0.2 * (2 ** attempt))
-
-                    except Exception as e:
-                        print(f"[router {self.cfg.router_id:02d}] domain resolve error {domain}: {e}", flush=True)
-                        error += 1
-                        break
-
-        if error:
-            self.stats.write(
-                source="router",
-                counters={
-                    "error_count": error,
-                    "route_error": error,
-                },
-            )
-        print(f"[router {self.cfg.router_id:02d}] finish processing '{folder}', {file_cnt} files", flush=True)
-
-    def _process_link(self, domain_resolver: DomainResolver, link: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    def _process_link(self, link: Dict[str, str]) -> Optional[Dict[str, Any]]:
         url = link.get("url")
         domain = link.get("domain")
         anchor = link.get("anchor")
@@ -179,28 +132,31 @@ class RouterService:
         ingestor_id = self.sharder.shard_to_ingestor(shard_id)
 
         try:
-            domain_id, domain_score = domain_resolver.ensure_and_get(domain, shard_id)
-            out = {
+            domain_id, domain_score = self._resolve_domain(domain, shard_id)
+
+            self.producer.send("ingest_input", ingestor_id, {
                 "url": url,
                 "status": "new",
                 "shard_id": shard_id,
                 "domain_id": domain_id,
                 "domain_score": domain_score,
-            }
+            })
 
-            out_dir = self._out_dir(ingestor_id)
-            out_dir.mkdir(parents=True, exist_ok=True)
-            out_path = out_dir / f"{datetime.now(timezone.utc).strftime('%H%M')}_router{self.cfg.router_id:02d}.jsonl"
-            append_jsonl(out_path, out)
-
-            return {
-                "url": url,
-                "domain_id": domain_id,
-                "anchor": anchor,
-            }
+            return {"url": url, "domain_id": domain_id, "anchor": anchor}
         except Exception as e:
             print(f"[router {self.cfg.router_id:02d}] process link error {link}: {e}", flush=True)
-            raise
+            return None
+
+    def run_forever(self) -> None:
+        print(f"[router {self.cfg.router_id:02d}] started", flush=True)
+        while True:
+            messages = self.consumer.poll("crawl_result", self.cfg.router_id, max_messages=100)
+            if not messages:
+                time.sleep(self.cfg.poll_interval_sec)
+                continue
+
+            for rec in messages:
+                self._process_record(rec)
 
 
 def load_router_config(path: str, router_id: int) -> RouterConfig:
@@ -210,15 +166,10 @@ def load_router_config(path: str, router_id: int) -> RouterConfig:
 
     return RouterConfig(
         router_id=router_id,
-        crawler_dir_template=str(require(r, "crawler_dir_template")),
-        ingestor_dir_template=str(require(r, "ingestor_dir_template")),
-        progress_template=str(require(r, "progress_template")),
-        stats_dir=str(require(r, "stats_dir")),
-        interval_minutes=int(r.get("interval_minutes", 30)),
-        scan_sleep_minutes=int(r.get("scan_sleep_minutes", 5)),
         num_shards=int(require(r, "num_shards")),
         shards_per_ingestor=int(require(r, "shards_per_ingestor")),
+        interval_minutes=int(r.get("interval_minutes", 10)),
+        poll_interval_sec=int(r.get("poll_interval_sec", 5)),
         domain_overrides=r.get("domain_overrides", {}) or {},
         postgres_dsn=str(require(pg, "dsn")),
     )
-

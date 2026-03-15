@@ -19,6 +19,10 @@ offerer:
   per_shard_select_cap: 4096
 
 
+ipc:
+  backend: "filesystem"
+  base_dir: "/data/ipc"
+
 postgres:
   dsn: "postgresql+psycopg2://crawler:crawler@172.16.191.1:5432/crawlerdb"
 

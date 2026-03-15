@@ -1,11 +1,11 @@
 from __future__ import annotations
-import time
+
 import argparse
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from libs.config.loader import load_yaml, require
-from libs.ipc.folder_reader import Progress, FolderReader
+from libs.ipc.bus import create_consumer
 from libs.stats.delta_writer import StatsDeltaWriter
 
 from .service import IngestService
@@ -19,18 +19,9 @@ def main():
     args = ap.parse_args()
 
     raw = load_yaml(args.config)
-    ingestor_id = args.ingestor_id
-
-    ingestor = require(raw, "ingestor")
+    ingestor_cfg = require(raw, "ingestor")
     pg = require(raw, "postgres")
-
-    prog = Progress(require(ingestor, "progress_template").format(id=ingestor_id))
-    interval_minutes = int(ingestor.get("interval_minutes", 30))
-    reader = FolderReader(
-        require(ingestor, "result_dir_template").format(id=ingestor_id),
-        prog,
-        interval_minutes
-    )
+    ipc = raw.get("ipc", {})
 
     engine = create_engine(
         str(require(pg, "dsn")),
@@ -49,20 +40,13 @@ def main():
     )
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
+    consumer = create_consumer(ipc, group="ingestor", consumer_name=f"ingestor_{args.ingestor_id:02d}")
     db = IngestDB(Session)
-    stats_dir=require(ingestor, "stats_dir")
-    svc = IngestService(ingestor_id, db, StatsDeltaWriter(stats_dir))
+    stats = StatsDeltaWriter(require(ingestor_cfg, "stats_dir"))
 
-    while True:
-        progressed = False
-        for date, time_, folder in reader.iter_ready_folders():
-            svc.process_folder(folder)
-            prog.advance(date, time_)
-            progressed = True
-        if not progressed:
-            time.sleep(interval_minutes * 60)
+    svc = IngestService(args.ingestor_id, db, consumer, stats)
+    svc.run_forever()
 
 
 if __name__ == "__main__":
     main()
-

@@ -5,6 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from libs.config.loader import load_yaml, require
+from libs.ipc.bus import create_producer
 
 from .service import OffererDerivation, OffererConfig, OffererService
 from .selection.example_strategy import ExampleStrategy
@@ -20,6 +21,7 @@ def main() -> None:
 
     offerer = require(raw, "offerer")
     pg = require(raw, "postgres")
+    ipc = raw.get("ipc", {})
 
     id_start = int(offerer.get("id_start", 0))
     id_end = int(offerer.get("id_end", 0))
@@ -45,12 +47,10 @@ def main() -> None:
     )
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
-    selector = ExampleStrategy(
-        Session=Session,
-    )
+    selector = ExampleStrategy(Session=Session)
+    producer = create_producer(ipc)
 
     deriv = OffererDerivation(
-        queue_dir_template=str(offerer.get("queue_dir_template", "/data/ipc/url_queue/crawler_{id:02d}")),
         total_shards=int(offerer.get("total_shards", 256)),
         shards_per_offerer=int(offerer.get("shards_per_offerer", 16)),
     )
@@ -64,9 +64,8 @@ def main() -> None:
         stats_dir=str(offerer.get("stats_dir", "/data/ipc/stats")),
     )
 
-    OffererService(cfg, deriv, selector).run_forever()
+    OffererService(cfg, deriv, selector, producer).run_forever()
 
 
 if __name__ == "__main__":
     main()
-

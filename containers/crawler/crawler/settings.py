@@ -8,7 +8,7 @@ NEWSPIDER_MODULE = "crawler.spiders"
 
 ROBOTSTXT_OBEY = True
 
-DUPEFILTER_CLASS = "scrapy.dupefilters.BaseDupeFilter" # Disable dupefilter
+DUPEFILTER_CLASS = "scrapy.dupefilters.BaseDupeFilter"
 
 with open("domain_qps.json") as f:
     _DOMAIN_QPS = json.load(f)
@@ -24,26 +24,19 @@ DNS_TIMEOUT = 15
 DOWNLOAD_TIMEOUT = 15
 DOWNLOAD_MAXSIZE = 10 * 1024 * 1024
 RETRY_ENABLED = True
-RETRY_TIMES = 1 # initial + retry = 2
+RETRY_TIMES = 1
 
 REDIRECT_ENABLED = True
 COOKIES_ENABLED = False
 
-#HTTPCACHE_ENABLED = True
-#HTTPCACHE_DIR = "httpcache"
-#HTTPCACHE_POLICY = "scrapy.extensions.httpcache.RFC2616Policy"
-
-# Memory & stats logging
 EXTENSIONS = {
     "scrapy.extensions.logstats.LogStats": 500,
     "scrapy.extensions.memusage.MemoryUsage": 500,
 }
 
 ITEM_PIPELINES = {
-    "crawler.pipelines.JsonPipeline": 500,
+    "crawler.pipelines.CrawlResultPipeline": 500,
 }
 
-URL_QUEUE_TEMPLATE = "/data/ipc/url_queue/crawler_{id:02d}"
-RESULT_DIR_TEMPLATE = "/data/ipc/crawl_result/crawler_{id:02d}"
-INTERVAL_MINUTES = 10
-
+# IPC config: override via environment or keep default filesystem
+IPC_CONFIG = {"backend": "filesystem", "base_dir": "/data/ipc"}

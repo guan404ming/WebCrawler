@@ -12,6 +12,7 @@ from scrapy.spidermiddlewares.httperror import HttpError
 
 from crawler.items import PageItem
 from crawler.queue_consumer import QueueConsumer
+from libs.ipc.bus import create_consumer
 
 ACCEPTED_CONTENT_TYPES = ["text/html", "application/xhtml+xml"]
 
@@ -26,8 +27,9 @@ class HtmlSpider(scrapy.Spider):
     def from_crawler(cls, crawler, *args, **kwargs):
         spider = super().from_crawler(crawler, *args, **kwargs)
 
-        qtpl = crawler.settings["URL_QUEUE_TEMPLATE"]
-        spider.queue = QueueConsumer(queue_dir=qtpl.format(id=spider.crawler_id))
+        ipc_config = crawler.settings.get("IPC_CONFIG", {})
+        consumer = create_consumer(ipc_config, group="crawler", consumer_name=f"crawler_{spider.crawler_id:02d}")
+        spider.queue = QueueConsumer(consumer=consumer, crawler_id=spider.crawler_id)
         spider.link_extractor = LinkExtractor(canonicalize=True)
 
         crawler.signals.connect(spider.on_idle, signal=signals.spider_idle)
@@ -70,7 +72,6 @@ class HtmlSpider(scrapy.Spider):
         domain = ".".join([p for p in [extracted.domain, extracted.suffix] if p])
         return domain
 
-
     def parse(self, response):
         url = canonicalize_url(response.url)
         domain = self._extract_domain(url)
@@ -87,7 +88,6 @@ class HtmlSpider(scrapy.Spider):
             return
 
         outlinks = []
-
         for link in self.link_extractor.extract_links(response):
             if not link.nofollow:
                 u = canonicalize_url(link.url)
@@ -135,5 +135,4 @@ class HtmlSpider(scrapy.Spider):
         request.meta["t_down_start"] = t
     def req_end(self, response, request):
         t = datetime.now()
-        print(f"[crawler-{self.crawler_id:02d}] Download ended: time={t}, url={request.url}, latency={t - request.meta.get("t_down_start", t)}", flush=True)
-
+        print(f"[crawler-{self.crawler_id:02d}] Download ended: time={t}, url={request.url}, latency={t - request.meta.get('t_down_start', t)}", flush=True)
