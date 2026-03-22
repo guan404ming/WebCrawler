@@ -43,7 +43,7 @@ ITEM_PIPELINES = {
     "crawler.pipelines.JsonPipeline": 500,
 }
 
-URL_QUEUE_TEMPLATE = "/data/ipc/url_queue/crawler_{id:02d}"
-RESULT_DIR_TEMPLATE = "/data/ipc/crawl_result/crawler_{id:02d}"
+URL_QUEUE_TEMPLATE = "/app/ipc/url_queue/crawler_{id:02d}"
+RESULT_DIR_TEMPLATE = "/app/ipc/crawl_result/crawler_{id:02d}"
 INTERVAL_MINUTES = 10
 

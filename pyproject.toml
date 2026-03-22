@@ -1,0 +1,17 @@
+[project]
+name = "webcrawler"
+version = "0.1.0"
+description = "Web crawler scheduler stack (containers + tooling)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+# Run: uv sync --group seed
+# Then: uv run --group seed python seed_db.py
+[dependency-groups]
+seed = [
+    "tldextract==5.1.1",
+    "pyyaml==6.0.2",
+    "sqlalchemy==2.0.44",
+    "psycopg2-binary==2.9.11",
+]

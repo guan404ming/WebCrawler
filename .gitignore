@@ -10,3 +10,5 @@ tmp/
 *.swp
 *.swo
 
+data/
+ipc/

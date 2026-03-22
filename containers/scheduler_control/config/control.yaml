@@ -5,8 +5,8 @@ offerer:
 
   # Disk path
   # The crawler id equals offerer id by default in this mapping.
-  queue_dir_template: "/data/ipc/url_queue/crawler_{id:02d}"
-  stats_dir: "/data/ipc/stats"
+  queue_dir_template: "/app/ipc/url_queue/crawler_{id:02d}"
+  stats_dir: "/app/ipc/stats"
 
   # Shard assignment rule
   total_shards: 256
@@ -20,7 +20,7 @@ offerer:
 
 
 postgres:
-  dsn: "postgresql+psycopg2://crawler:crawler@172.16.191.1:5432/crawlerdb"
+  dsn: "postgresql+psycopg2://crawler:crawler@postgres:5432/crawlerdb"
 
 accounting:
   total_shards: 256
