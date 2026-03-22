@@ -1,7 +1,7 @@
 offerer:
   # Offerer IDs to run (inclusive)
   id_start: 0
-  id_end: 15
+  id_end: 31
 
   # Disk path
   # The crawler id equals offerer id by default in this mapping.
@@ -10,7 +10,7 @@ offerer:
 
   # Shard assignment rule
   total_shards: 256
-  shards_per_offerer: 16
+  shards_per_offerer: 8
 
   # Refill policy
   scan_interval_sec: 300

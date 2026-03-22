@@ -37,7 +37,9 @@ COOKIES_ENABLED = False
 EXTENSIONS = {
     "scrapy.extensions.logstats.LogStats": 500,
     "scrapy.extensions.memusage.MemoryUsage": 500,
+    "crawler.extensions.throughput.ThroughputExtension": 600,
 }
+THROUGHPUT_INTERVAL = 30
 
 ITEM_PIPELINES = {
     "crawler.pipelines.JsonPipeline": 500,

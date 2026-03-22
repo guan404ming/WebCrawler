@@ -6,7 +6,7 @@ router:
   interval_minutes: 10
 
   num_shards: 256
-  shards_per_ingestor: 16
+  shards_per_ingestor: 8
 
   # explicitly route top-level domains
   domain_overrides:

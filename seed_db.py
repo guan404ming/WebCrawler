@@ -66,7 +66,7 @@ def _default_config_path() -> Path:
     return Path(__file__).resolve().parent / "containers/scheduler_ingest/config/ingest.yaml"
 
 
-SEED_FILE = Path(os.environ.get("SEED_FILE", "/app/seed_urls.txt"))
+SEED_FILE = Path(os.environ.get("SEED_FILE", str(Path(__file__).resolve().parent / "seed_urls.txt")))
 
 
 def extract_domain(url: str) -> str:
@@ -163,8 +163,8 @@ def insert_new_link(sess: Session, url: str, shard_id: int, domain_id: int, doma
     th = _this(shard_id)
     inserted_url = sess.execute(
         text(f"""
-            INSERT INTO {tcur} (url, domain_id, domain_score)
-            VALUES (:url, :domain_id, :domain_score)
+            INSERT INTO {tcur} (url, domain_id, domain_score, should_crawl)
+            VALUES (:url, :domain_id, :domain_score, TRUE)
             ON CONFLICT (url) DO NOTHING
             RETURNING url;
         """),

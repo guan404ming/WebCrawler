@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 from pathlib import Path
 from collections import defaultdict
 
@@ -7,12 +8,17 @@ from libs.stats.delta_writer import StatsDeltaWriter
 
 from .db_ops import IngestDB, IngestResult
 
+_DRY_RUN = os.environ.get("INGEST_DRY_RUN", "0") == "1"
+
 
 class IngestService:
     def __init__(self, ingestor_id: int, db: IngestDB, stats: StatsDeltaWriter):
         self.ingestor_id = ingestor_id
         self.db = db
         self.stats = stats
+        self.dry_run = _DRY_RUN
+        if self.dry_run:
+            print(f"[ingestor {self.ingestor_id:02d}] DRY-RUN mode: skipping all DB writes", flush=True)
 
     def process_folder(self, folder: Path):
         print(f"[ingestor {self.ingestor_id:02d}] start processing '{folder}'", flush=True)
@@ -35,9 +41,19 @@ class IngestService:
             
             for rec in recs:
                 try:
+                    if self.dry_run:
+                        status = rec.get("status", "")
+                        counters["dry_run_records"] += 1
+                        if status == "new":
+                            counters["new_links"] += 1
+                        elif status == "ok":
+                            counters["num_fetch_ok"] += 1
+                        else:
+                            counters["num_fetch_fail"] += 1
+                        continue
+
                     if rec.get("status") == "new":
                         if self.db.process_link(rec):
-                            # discover new link
                             counters["new_links"] += 1
                         continue
 

@@ -3,7 +3,7 @@ services:
     image: postgres:16
     container_name: postgres
     command: >
-      -c max_connections=500
+      -c max_connections=1024
       -c max_wal_size=20GB
       -c checkpoint_timeout=15min
     restart: unless-stopped
@@ -33,6 +33,8 @@ services:
     container_name: scheduler_control
     init: true
     restart: unless-stopped
+    environment:
+      - NUM_WORKERS=${NUM_WORKERS:-16}
     volumes:
       - ./:/app
     logging:
@@ -48,6 +50,9 @@ services:
     container_name: scheduler_ingest
     init: true
     restart: unless-stopped
+    environment:
+      - NUM_WORKERS=${NUM_WORKERS:-16}
+      - INGEST_DRY_RUN=${INGEST_DRY_RUN:-0}
     volumes:
       - ./:/app
     logging:
@@ -66,6 +71,12 @@ services:
       - 8.8.8.8
       - 1.1.1.1
     restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    environment:
+      - NUM_WORKERS=${NUM_WORKERS:-16}
     volumes:
       - ./:/app
     logging:

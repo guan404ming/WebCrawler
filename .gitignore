@@ -12,3 +12,4 @@ tmp/
 
 data/
 ipc/
+bench_logs/
