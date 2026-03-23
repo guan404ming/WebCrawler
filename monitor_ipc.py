@@ -4,6 +4,8 @@ Live IPC throughput monitor for the crawler benchmark.
 
 Prints a snapshot every INTERVAL seconds showing file counts and deltas
 across url_queue, crawl_result/crawler_*, and crawl_result/ingestor_* trees.
+Also tracks how many JSONL result records have been written by crawlers,
+so benchmark logs include total results and result QPS instead of only file counts.
 
 All snapshots are appended to a JSONL log file for later visualization with
 plot_bench.py.
@@ -20,6 +22,48 @@ import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+class JsonlLineCounter:
+    """Incrementally count JSONL lines for append-only files."""
+
+    def __init__(self) -> None:
+        self._cache: dict[Path, tuple[int, int]] = {}
+
+    @staticmethod
+    def _count_newlines(fh, chunk_size: int = 1024 * 1024) -> int:
+        total = 0
+        while True:
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                return total
+            total += chunk.count(b"\n")
+
+    def count_file(self, path: Path) -> int:
+        try:
+            size = path.stat().st_size
+        except FileNotFoundError:
+            self._cache.pop(path, None)
+            return 0
+
+        cached = self._cache.get(path)
+        if cached is None or size < cached[0]:
+            with open(path, "rb") as fh:
+                lines = self._count_newlines(fh)
+        elif size == cached[0]:
+            return cached[1]
+        else:
+            with open(path, "rb") as fh:
+                fh.seek(cached[0])
+                lines = cached[1] + self._count_newlines(fh)
+
+        self._cache[path] = (size, lines)
+        return lines
+
+    def prune(self, live_paths: set[Path]) -> None:
+        for path in list(self._cache):
+            if path not in live_paths:
+                self._cache.pop(path, None)
 
 
 def count_files(root: Path) -> tuple[int, int]:
@@ -47,13 +91,44 @@ def count_tree(root: Path, prefix: str) -> tuple[int, int]:
     return total_files, total_dirs
 
 
-def snapshot(ipc: Path) -> dict[str, tuple[int, int]]:
+def count_jsonl_records(root: Path, prefix: str, line_counter: JsonlLineCounter) -> int:
+    """Count total JSONL records under subdirs matching prefix."""
+    if not root.exists():
+        line_counter.prune(set())
+        return 0
+
+    total_records = 0
+    live_paths: set[Path] = set()
+    for d in sorted(root.iterdir()):
+        if d.is_dir() and d.name.startswith(prefix):
+            for path in d.rglob("*.jsonl"):
+                live_paths.add(path)
+                total_records += line_counter.count_file(path)
+
+    line_counter.prune(live_paths)
+    return total_records
+
+
+def snapshot(ipc: Path, crawler_result_counter: JsonlLineCounter) -> dict[str, dict[str, int]]:
     url_queue = ipc / "url_queue"
     crawl_result = ipc / "crawl_result"
+    url_queue_files, url_queue_dirs = count_tree(url_queue, "crawler_")
+    crawler_out_files, crawler_out_dirs = count_tree(crawl_result, "crawler_")
+    ingestor_in_files, ingestor_in_dirs = count_tree(crawl_result, "ingestor_")
     return {
-        "url_queue": count_tree(url_queue, "crawler_"),
-        "crawler_out": count_tree(crawl_result, "crawler_"),
-        "ingestor_in": count_tree(crawl_result, "ingestor_"),
+        "url_queue": {
+            "files": url_queue_files,
+            "dirs": url_queue_dirs,
+        },
+        "crawler_out": {
+            "files": crawler_out_files,
+            "dirs": crawler_out_dirs,
+            "records": count_jsonl_records(crawl_result, "crawler_", crawler_result_counter),
+        },
+        "ingestor_in": {
+            "files": ingestor_in_files,
+            "dirs": ingestor_in_dirs,
+        },
     }
 
 
@@ -78,13 +153,15 @@ def main() -> None:
     print(f"Logging to {log_path}")
     print("Press Ctrl+C to stop.\n")
 
-    prev = snapshot(ipc)
+    crawler_result_counter = JsonlLineCounter()
+
+    prev = snapshot(ipc, crawler_result_counter)
     prev_time = time.monotonic()
     t0_wall = time.time()
 
     while True:
         time.sleep(interval)
-        now = snapshot(ipc)
+        now = snapshot(ipc, crawler_result_counter)
         now_time = time.monotonic()
         dt = now_time - prev_time
         elapsed = time.time() - t0_wall
@@ -105,8 +182,9 @@ def main() -> None:
             ("crawler_out", "crawl_result   "),
             ("ingestor_in", "ingestor_input "),
         ]:
-            files_now, dirs_now = now[key]
-            files_prev, _ = prev[key]
+            files_now = now[key]["files"]
+            dirs_now = now[key]["dirs"]
+            files_prev = prev[key]["files"]
             delta = files_now - files_prev
             rate = delta / dt if dt > 0 else 0
             sign = "+" if delta >= 0 else ""
@@ -117,7 +195,17 @@ def main() -> None:
             rec[f"{key}_delta"] = delta
             rec[f"{key}_rate"] = round(rate, 2)
 
-        q_delta = prev["url_queue"][0] - now["url_queue"][0]
+        result_now = now["crawler_out"].get("records", 0)
+        result_prev = prev["crawler_out"].get("records", 0)
+        result_delta = result_now - result_prev
+        result_qps = result_delta / dt if dt > 0 else 0.0
+        result_sign = "+" if result_delta >= 0 else ""
+        print(f"  --- total results: {result_now}  (delta: {result_sign}{result_delta}, qps={result_qps:.1f})")
+        rec["crawler_out_records"] = result_now
+        rec["crawler_out_records_delta"] = result_delta
+        rec["crawler_out_qps"] = round(result_qps, 2)
+
+        q_delta = prev["url_queue"]["files"] - now["url_queue"]["files"]
         est_urls_per_s = 0.0
         if q_delta > 0 and dt > 0:
             batches_per_s = q_delta / dt

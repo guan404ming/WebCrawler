@@ -42,6 +42,52 @@ def infer_n_from_filename(name: str) -> str:
     return f"N={m.group(1)}" if m else name
 
 
+def latest_ipc_session(records: list[dict]) -> list[dict]:
+    """
+    Keep only the latest monotonic session in a monitor log.
+
+    This tolerates users appending multiple monitor runs into the same JSONL and
+    also splits when counters reset because a benchmark restarted and IPC was cleaned.
+    """
+    if not records:
+        return records
+
+    start = 0
+    for i in range(1, len(records)):
+        prev = records[i - 1]
+        curr = records[i]
+        prev_elapsed = float(prev.get("elapsed_s", 0) or 0)
+        curr_elapsed = float(curr.get("elapsed_s", 0) or 0)
+        prev_results = float(prev.get("crawler_out_records", 0) or 0)
+        curr_results = float(curr.get("crawler_out_records", 0) or 0)
+
+        if curr_elapsed < prev_elapsed or curr_results < prev_results:
+            start = i
+
+    return records[start:]
+
+
+def result_qps_from_totals(records: list[dict]) -> list[float]:
+    """Recompute QPS from cumulative result counts to avoid negative reset spikes."""
+    if not records:
+        return []
+
+    qps = [0.0]
+    for i in range(1, len(records)):
+        prev = records[i - 1]
+        curr = records[i]
+        prev_elapsed = float(prev.get("elapsed_s", 0) or 0)
+        curr_elapsed = float(curr.get("elapsed_s", 0) or 0)
+        prev_results = float(prev.get("crawler_out_records", 0) or 0)
+        curr_results = float(curr.get("crawler_out_records", 0) or 0)
+
+        dt = curr_elapsed - prev_elapsed
+        delta = curr_results - prev_results
+        qps.append(max(0.0, delta / dt) if dt > 0 else 0.0)
+
+    return qps
+
+
 def load_scrapy_stats(stats_dir: Path) -> list[dict]:
     """Load and merge all crawler_*_throughput.jsonl files."""
     all_recs = []
@@ -52,31 +98,37 @@ def load_scrapy_stats(stats_dir: Path) -> list[dict]:
 
 def plot_ipc_comparison(ax_queue: plt.Axes, ax_rate: plt.Axes,
                         ipc_logs: list[Path]) -> None:
-    """Plot IPC file counts and estimated URL consume rate across runs."""
+    """Plot queue backlog, total results, and result QPS across runs."""
     for log_path in ipc_logs:
-        recs = load_jsonl(log_path)
+        recs = latest_ipc_session(load_jsonl(log_path))
         if not recs:
             continue
         label = infer_n_from_filename(log_path.stem)
         elapsed = [r["elapsed_s"] for r in recs]
-        queue_files = [r.get("url_queue_files", 0) for r in recs]
-        crawl_files = [r.get("crawler_out_files", 0) for r in recs]
+        queue_est_urls = [r.get("url_queue_files", 0) * r.get("batch_size", 512) for r in recs]
+        result_total = [r.get("crawler_out_records", r.get("crawler_out_files", 0)) for r in recs]
+        has_result_counts = any("crawler_out_records" in r for r in recs)
+        result_qps = result_qps_from_totals(recs) if has_result_counts else [0.0 for _ in recs]
         est_urls = [r.get("est_urls_per_s", 0) for r in recs]
 
-        ax_queue.plot(elapsed, queue_files, label=f"{label} url_queue", linewidth=1.5)
-        ax_queue.plot(elapsed, crawl_files, label=f"{label} crawl_result",
-                      linewidth=1.5, linestyle="--")
-        ax_rate.plot(elapsed, est_urls, label=label, linewidth=1.5)
+        ax_queue.plot(elapsed, queue_est_urls, label=f"{label} queue est. URLs",
+                      linewidth=1.5, linestyle=":")
+        ax_queue.plot(elapsed, result_total,
+                      label=f"{label} total results" if has_result_counts else f"{label} result files",
+                      linewidth=1.5)
+        if has_result_counts:
+            ax_rate.plot(elapsed, result_qps, label=f"{label} result QPS", linewidth=1.5)
+        # ax_rate.plot(elapsed, est_urls, label=f"{label} queue consume est.", linewidth=1.2, linestyle="--")
 
     ax_queue.set_xlabel("Elapsed (s)")
-    ax_queue.set_ylabel("File count")
-    ax_queue.set_title("IPC File Counts Over Time")
+    ax_queue.set_ylabel("Count")
+    ax_queue.set_title("Queue Backlog vs Total Results")
     ax_queue.legend(fontsize=8)
     ax_queue.grid(True, alpha=0.3)
 
     ax_rate.set_xlabel("Elapsed (s)")
-    ax_rate.set_ylabel("Est. URLs/s consumed")
-    ax_rate.set_title("Estimated Crawl Throughput (URLs/s)")
+    ax_rate.set_ylabel("QPS")
+    ax_rate.set_title("Result QPS vs Queue Consume Estimate")
     ax_rate.legend(fontsize=8)
     ax_rate.grid(True, alpha=0.3)
 
@@ -92,14 +144,15 @@ def plot_scrapy_throughput(ax_resp: plt.Axes, ax_lat: plt.Axes,
                     ha="center", va="center", transform=ax_lat.transAxes)
         return
 
-    # Aggregate per timestamp window: sum responses, weighted-avg latency
+    # Aggregate per timestamp window: sum responses/results, weighted-avg latency
     by_ts: dict[str, dict] = {}
     for r in recs:
         ts = r["ts"][:19]  # truncate to second
         if ts not in by_ts:
-            by_ts[ts] = {"resp": 0, "items_ok": 0, "items_fail": 0,
+            by_ts[ts] = {"resp": 0, "items_total": 0, "items_ok": 0, "items_fail": 0,
                          "lat_sum": 0.0, "lat_count": 0, "window": 0.0}
         by_ts[ts]["resp"] += r.get("resp_received", 0)
+        by_ts[ts]["items_total"] += r.get("items_ok", 0) + r.get("items_fail", 0)
         by_ts[ts]["items_ok"] += r.get("items_ok", 0)
         by_ts[ts]["items_fail"] += r.get("items_fail", 0)
         lat = r.get("avg_download_latency_ms", 0)
@@ -111,21 +164,21 @@ def plot_scrapy_throughput(ax_resp: plt.Axes, ax_lat: plt.Axes,
     timestamps = sorted(by_ts.keys())
     resp_per_s = []
     avg_latency = []
-    items_ok = []
+    results_per_s = []
     for ts in timestamps:
         d = by_ts[ts]
         w = d["window"] if d["window"] > 0 else 30
         resp_per_s.append(d["resp"] / w)
-        items_ok.append(d["items_ok"] / w)
+        results_per_s.append(d["items_total"] / w)
         avg_latency.append(d["lat_sum"] / d["lat_count"] if d["lat_count"] > 0 else 0)
 
     x = list(range(len(timestamps)))
 
     ax_resp.bar(x, resp_per_s, width=0.8, alpha=0.7, label="responses/s", color="#2196F3")
-    ax_resp.bar(x, items_ok, width=0.8, alpha=0.5, label="items_ok/s", color="#4CAF50")
+    ax_resp.bar(x, results_per_s, width=0.8, alpha=0.5, label="results/s", color="#4CAF50")
     ax_resp.set_xlabel("Window index")
     ax_resp.set_ylabel("Rate (/s)")
-    ax_resp.set_title("Scrapy Aggregate Throughput (all crawlers)")
+    ax_resp.set_title("Scrapy Aggregate Responses vs Results")
     ax_resp.legend(fontsize=8)
     ax_resp.grid(True, alpha=0.3, axis="y")
 
