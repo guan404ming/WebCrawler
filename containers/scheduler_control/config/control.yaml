@@ -20,7 +20,7 @@ offerer:
 
 
 postgres:
-  dsn: "postgresql://crawler:crawler@172.16.191.1:5432/crawlerdb"
+  dsn: "postgresql://crawler:crawler@postgres:5432/crawlerdb"
 
 accounting:
   total_shards: 256

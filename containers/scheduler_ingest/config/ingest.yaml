@@ -36,5 +36,5 @@ stats:
   bad_dir: "/app/ipc/stats/bad"
 
 postgres:
-  dsn: "postgresql://crawler:crawler@172.16.191.1:5432/crawlerdb"
+  dsn: "postgresql://crawler:crawler@postgres:5432/crawlerdb"
 
