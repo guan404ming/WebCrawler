@@ -50,7 +50,7 @@ echo "  ingest.yaml:  shards_per_ingestor=$SHARDS_PER_WORKER"
 
 # ── 3. Clean old IPC state ──────────────────────────────────────────
 echo "Cleaning IPC directories ..."
-rm -rf "$SCRIPT_DIR/ipc/url_queue" "$SCRIPT_DIR/ipc/crawl_result" "$SCRIPT_DIR/ipc/progress" "$SCRIPT_DIR/ipc/stats"
+docker run --rm -v $(pwd):/data -w /data alpine rm -rf ipc/
 
 # ── 4. Build images & start Postgres only ──────────────────────────
 export NUM_WORKERS="$N"
@@ -58,7 +58,7 @@ export INGEST_DRY_RUN=1
 
 cd "$SCRIPT_DIR"
 echo "Tearing down previous stack ..."
-docker compose down --remove-orphans 2>/dev/null || true
+docker compose rm -f -s -v scheduler_control scheduler_ingest crawler
 
 echo "Building images ..."
 docker compose build
@@ -122,4 +122,4 @@ echo "Watch crawler logs:"
 echo "  docker logs -f crawler 2>&1 | grep -E 'Download (started|ended)'"
 echo ""
 echo "Stop:"
-echo "  docker compose down"
+echo "  docker compose rm -f -s -v scheduler_control scheduler_ingest crawler"
