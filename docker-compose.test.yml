@@ -60,17 +60,23 @@ name: crawler-loki-test
 #        like 'host all crawler 172.17.0.0/16 md5' on the prod DB and
 #        SELECT pg_reload_conf().
 #
-# 3) Open Grafana → http://<host>:3000  (admin / admin)
+# 3) Open Grafana → http://<host>:3000   (admin / admin1234)
 #
-#    First-login gotchas (in this order):
-#      a) Grafana forces a password change on first login. Click 'Skip' top-right.
-#      b) If 'Invalid username or password': the grafana volume already has
-#         an admin user from a previous run with a different login. Easiest
-#         fix is the nuke-and-start-fresh path in step (5).
-#      c) If you cannot down -v (e.g. you want to keep loki data), you can
-#         reset in place:
+#    The password is intentionally NOT the literal "admin" — Grafana's
+#    'must change password' prompt is triggered only by that exact string,
+#    so admin1234 lets us go straight to the dashboard.
+#
+#    If you still get 'Invalid username or password': the grafana volume
+#    has an admin row from a previous run that does not match the current
+#    env vars (env vars only seed the DB on first init). Two ways out:
+#
+#      a) Nuke and restart (preferred — matches the test workflow):
+#           docker compose -f docker-compose.test.yml down -v
+#           docker compose -f docker-compose.test.yml up -d
+#
+#      b) Reset in place (if you want to keep the loki/grafana volumes):
 #           docker exec -it crawler-loki-test-grafana \
-#               grafana cli admin reset-admin-password admin
+#               grafana cli admin reset-admin-password admin1234
 #         and if the username itself is wrong:
 #           docker exec -it crawler-loki-test-grafana \
 #               sqlite3 /var/lib/grafana/grafana.db \
@@ -177,7 +183,9 @@ services:
         condition: service_healthy
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      # Grafana hard-codes the 'must change password' prompt to trigger
+      # only when the literal password is "admin". Anything else skips it.
+      - GF_SECURITY_ADMIN_PASSWORD=admin1234
       - GF_AUTH_ANONYMOUS_ENABLED=false
       - GF_USERS_DEFAULT_THEME=dark
     ports:
