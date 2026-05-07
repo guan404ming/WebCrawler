@@ -1,0 +1,32 @@
+# Test-only config for docker-compose.test.yml.
+# Edit knobs here without touching the prod control.yaml.
+#
+# Loaded by ops/test/supervisord.scheduler_control.conf via:
+#   --config /app/containers/scheduler_control/config/control.test.yaml
+#
+# The accounting and golden_discovery_ranker_v1 sections are intentionally
+# omitted: the test supervisord override does not start those programs.
+
+offerer:
+  id_start: 0
+  id_end: 15
+
+  queue_dir_template: "/data/ipc/url_queue/crawler_{id:02d}"
+  stats_dir: "/data/ipc/stats"
+
+  total_shards: 256
+  shards_per_offerer: 16
+
+  # Tune these four knobs for the test run; prod is unaffected.
+  scan_interval_sec: 60
+  max_domain_files: 200
+  low_watermark_domains: 120
+  per_domain_url_cap: 100
+
+
+postgres:
+  # Test runs on the DB host itself; reach prod postgres via the host's
+  # docker bridge gateway (extra_hosts host-gateway alias in
+  # docker-compose.test.yml). Avoids the LAN-IP routing / pg_hba edge cases
+  # that bit us when the DSN was the same as prod.
+  dsn: "postgresql+psycopg2://crawler:crawler@host.docker.internal:5432/crawlerdb"

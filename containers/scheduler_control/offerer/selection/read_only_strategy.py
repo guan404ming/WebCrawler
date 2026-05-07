@@ -9,13 +9,26 @@ from .base import CandidateDomain, SelectionStrategy
 
 
 class ReadOnlyStrategy(SelectionStrategy):
-    """Test-only strategy: pulls eligible URLs from the DB without touching it.
+    """Test-only mirror of GoldenDiscoveryRankerV1Strategy that performs no
+    DB writes.
 
-    Unlike ExampleStrategy this performs no UPDATE/INSERT, so running it against
-    a live production database does not flip should_crawl, advance
-    last_scheduled, or append to url_event_counter_*. The same rows may be
-    re-selected on every scan, which is fine for generating log traffic in the
-    Loki test stack.
+    The selection clauses (WHERE / GROUP BY / ORDER BY / LATERAL ranking)
+    match the golden strategy verbatim, so the test stack sees the same
+    per-domain ordering and the same paused-domain filtering as prod.
+    What is intentionally stripped:
+
+      - FOR UPDATE SKIP LOCKED      (no row locks; concurrent offerers may
+                                     re-pick the same rows — acceptable in
+                                     test)
+      - UPDATE url_state_current_*  (does not flip should_crawl, does not
+                                     advance last_scheduled, does not bump
+                                     num_scheduled_90d)
+      - INSERT url_event_counter_*  (no event-row writes)
+      - sess.commit()               (nothing to commit)
+
+    Because should_crawl is never flipped, the same rows may be re-selected
+    on every scan. That is fine for generating log/IPC traffic against a
+    live prod DB without disturbing it.
     """
 
     def __init__(self, Session: sessionmaker):
@@ -47,11 +60,27 @@ class ReadOnlyStrategy(SelectionStrategy):
 
         sql = text(f"""
         WITH eligible_domains AS (
-            SELECT DISTINCT domain_id
+            SELECT
+                domain_id,
+                MAX(CASE WHEN url_score_updated_at IS NOT NULL THEN url_score END) AS best_golden_discovery_score,
+                MAX(url_score) AS best_any_score,
+                MAX(domain_score) AS best_domain_score,
+                MIN(first_seen) AS oldest_first_seen
             FROM {table}
             WHERE should_crawl = TRUE
               {exclude_clause}
-            ORDER BY domain_id
+              AND NOT EXISTS (
+                SELECT 1 FROM domain_state d
+                WHERE d.domain_id = {table}.domain_id
+                  AND d.crawl_paused_until > NOW()
+              )
+            GROUP BY domain_id
+            ORDER BY
+                best_golden_discovery_score DESC NULLS LAST,
+                best_any_score DESC NULLS LAST,
+                best_domain_score DESC NULLS LAST,
+                oldest_first_seen ASC NULLS LAST,
+                domain_id
             LIMIT :max_domains
         )
         SELECT u.url, u.domain_id
@@ -60,10 +89,12 @@ class ReadOnlyStrategy(SelectionStrategy):
             SELECT url, domain_id
             FROM {table}
             WHERE should_crawl = TRUE AND domain_id = d.domain_id
-            ORDER BY url_score DESC NULLS LAST,
-                     domain_score DESC NULLS LAST,
-                     last_scheduled ASC NULLS FIRST,
-                     first_seen ASC
+            ORDER BY
+                CASE WHEN url_score_updated_at IS NULL THEN 1 ELSE 0 END,
+                url_score DESC NULLS LAST,
+                domain_score DESC NULLS LAST,
+                last_scheduled ASC NULLS FIRST,
+                first_seen ASC
             LIMIT :per_domain_cap
         ) u;
         """)
