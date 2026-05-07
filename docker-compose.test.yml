@@ -99,7 +99,7 @@ name: crawler-loki-test
 # 5) Teardown — leave NOTHING behind (run BOTH lines):
 #
 #      docker compose -f docker-compose.test.yml down -v --remove-orphans
-#      rm -rf .test-data/
+#      docker run --rm -v "$(pwd):/host" -w /host alpine rm -rf .test-data
 #
 #      `down -v`            removes test containers, the
 #                           crawler-loki-test_default network, AND the
@@ -108,11 +108,17 @@ name: crawler-loki-test
 #                           those volumes survive and the grafana admin
 #                           password from this run carries into the next
 #                           one (which is exactly what causes the login
-#                           gotcha in step 3b).
+#                           gotcha in step 3).
 #      `--remove-orphans`   drops stale services renamed since last `up`.
-#      `rm -rf .test-data/` host bind-mount for IPC; docker never deletes
-#                           it, so crawl_result JSONL would otherwise pile
-#                           up across runs.
+#      The alpine line      replaces a plain `rm -rf .test-data/`. The
+#                           plain rm fails on the host because the test
+#                           containers run as root and create files /
+#                           subdirs inside /data/ipc (= ./.test-data/ipc
+#                           on the host) that end up root-owned. A
+#                           throwaway alpine container is itself root
+#                           inside, mounts the project dir, and can
+#                           delete those files without sudo on the host.
+#                           Pulls a ~5MB image once on first use.
 #
 #    Sanity-check teardown was clean (all four should print nothing):
 #
