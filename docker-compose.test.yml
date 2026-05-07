@@ -21,39 +21,103 @@ name: crawler-loki-test
 #     accounting_rolloff program is disabled and OFFERER_STRATEGY=read_only
 #     forces the SELECT-only selection strategy.
 #
-# Tuning workflow:
-#   Edit the four knobs listed below, then:
-#     docker compose -f docker-compose.test.yml restart crawler scheduler_control
-#   Watch the "Crawler internals" row in Grafana to see how pending/inflight/
-#   transferring/slot_queue respond, and the QPS panel to see whether throughput
-#   actually improved.
+# =============================================================================
+# Playbook (cheat sheet — copy/paste from here)
+# =============================================================================
 #
-#     IPC_DOMAIN_LOW_WATERMARK      → containers/crawler/crawler/settings.py
-#     offerer.per_domain_url_cap    → containers/scheduler_control/config/control.test.yaml
-#     offerer.max_domain_files      → containers/scheduler_control/config/control.test.yaml
-#     offerer.low_watermark_domains → containers/scheduler_control/config/control.test.yaml
+# 0) One-time host setup (skip if already done on this machine):
 #
-# Usage:
-#   1. One-time host install of the Loki log driver:
-#        docker plugin install grafana/loki-docker-driver:3.0.0 \
-#            --alias loki --grant-all-permissions
-#   2. Build and start:
-#        docker compose -f docker-compose.test.yml up -d --build
-#   3. Open http://localhost:3000 (admin / admin) → Dashboards → Crawler.
+#      docker plugin install grafana/loki-docker-driver:3.0.0 \
+#          --alias loki --grant-all-permissions
+#      mkdir -p .test-data/ipc
 #
-# Teardown (run in this order — nothing here touches the prod postgres on
-# this host, which is in a different compose project):
-#        docker compose -f docker-compose.test.yml down -v --remove-orphans
-#        rm -rf .test-data/
+#    The mkdir avoids docker creating the bind-mount as root, which would
+#    later force you to sudo to clean up.
 #
-#   `down -v`            stops + removes test containers, the
-#                        crawler-loki-test_default network, and the named
-#                        volumes crawler-loki-test_loki-data /
-#                        crawler-loki-test_grafana-data. Without -v those
-#                        volumes survive and pile up between runs.
-#   `--remove-orphans`   drops any stale services renamed since last `up`.
-#   `rm -rf .test-data/` host bind-mount for IPC; Docker never deletes it,
-#                        so crawl_result JSONL would otherwise accumulate.
+# 1) Build + start:
+#
+#      docker compose -f docker-compose.test.yml up -d --build
+#
+# 2) Verify all four containers came up cleanly:
+#
+#      docker compose -f docker-compose.test.yml ps
+#      docker logs -f crawler-loki-test-scheduler-control 2>&1 \
+#          | grep -E 'offer\.refill|offer\.error'
+#      docker logs -f crawler-loki-test-crawler
+#      ls .test-data/ipc/url_queue/crawler_00/ | head
+#
+#    Expected: 'offer.refill action=refill ...' lines appearing every
+#    scan_interval_sec, and domain_*.json files showing up under
+#    .test-data/ipc/url_queue/crawler_00/.
+#
+#    DB connection errors to look out for in scheduler_control logs:
+#      - 'could not translate host name "host.docker.internal"' →
+#        Docker Engine < 20.10 on this host. Replace the DSN in
+#        containers/scheduler_control/config/control.test.yaml with the
+#        bridge gateway IP (usually 172.17.0.1).
+#      - 'no pg_hba.conf entry for host "172.17.0.x"' → prod postgres
+#        pg_hba.conf does not allow the docker bridge subnet. Add a line
+#        like 'host all crawler 172.17.0.0/16 md5' on the prod DB and
+#        SELECT pg_reload_conf().
+#
+# 3) Open Grafana → http://<host>:3000  (admin / admin)
+#
+#    First-login gotchas (in this order):
+#      a) Grafana forces a password change on first login. Click 'Skip' top-right.
+#      b) If 'Invalid username or password': the grafana volume already has
+#         an admin user from a previous run with a different login. Easiest
+#         fix is the nuke-and-start-fresh path in step (5).
+#      c) If you cannot down -v (e.g. you want to keep loki data), you can
+#         reset in place:
+#           docker exec -it crawler-loki-test-grafana \
+#               grafana cli admin reset-admin-password admin
+#         and if the username itself is wrong:
+#           docker exec -it crawler-loki-test-grafana \
+#               sqlite3 /var/lib/grafana/grafana.db \
+#               'UPDATE "user" SET login="admin" WHERE id=1;'
+#
+# 4) Tune knobs (no rebuild needed):
+#
+#    Edit one of:
+#      IPC_DOMAIN_LOW_WATERMARK      → containers/crawler/crawler/settings.py
+#      offerer.per_domain_url_cap    → containers/scheduler_control/config/control.test.yaml
+#      offerer.max_domain_files      → containers/scheduler_control/config/control.test.yaml
+#      offerer.low_watermark_domains → containers/scheduler_control/config/control.test.yaml
+#    Then:
+#
+#      docker compose -f docker-compose.test.yml restart scheduler_control crawler
+#
+#    Watch the 'Crawler internals' row in Grafana for pending/inflight/
+#    transferring/slot_queue, and the QPS panel for throughput change.
+#
+# 5) Teardown — leave NOTHING behind (run BOTH lines):
+#
+#      docker compose -f docker-compose.test.yml down -v --remove-orphans
+#      rm -rf .test-data/
+#
+#      `down -v`            removes test containers, the
+#                           crawler-loki-test_default network, AND the
+#                           named volumes crawler-loki-test_loki-data /
+#                           crawler-loki-test_grafana-data. Without -v
+#                           those volumes survive and the grafana admin
+#                           password from this run carries into the next
+#                           one (which is exactly what causes the login
+#                           gotcha in step 3b).
+#      `--remove-orphans`   drops stale services renamed since last `up`.
+#      `rm -rf .test-data/` host bind-mount for IPC; docker never deletes
+#                           it, so crawl_result JSONL would otherwise pile
+#                           up across runs.
+#
+#    Sanity-check teardown was clean (all four should print nothing):
+#
+#      docker ps -a    --filter name=crawler-loki-test
+#      docker volume ls --filter name=crawler-loki-test
+#      docker network ls --filter name=crawler-loki-test
+#      ls .test-data 2>/dev/null
+#
+#    None of the above touches the prod postgres container on this host —
+#    it lives in a different compose project, with its own /data/postgres
+#    bind mount.
 
 x-loki-logging: &loki-logging
   driver: loki
