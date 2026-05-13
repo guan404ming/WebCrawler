@@ -71,6 +71,8 @@ def main() -> None:
         low_watermark_domains=int(offerer.get("low_watermark_domains", 16)),
         per_domain_url_cap=int(offerer.get("per_domain_url_cap", 100)),
         stats_dir=str(offerer.get("stats_dir", "/data/ipc/stats")),
+        peek_multiplier=int(offerer.get("peek_multiplier", 3)),
+        peek_hard_cap=int(offerer.get("peek_hard_cap", 1000)),
     )
 
     OffererService(cfg, deriv, selector).run_forever()

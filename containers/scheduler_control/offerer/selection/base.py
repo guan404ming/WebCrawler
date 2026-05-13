@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import NamedTuple
+
+
+class CandidateDomain(NamedTuple):
+    domain_id: int
+    shard_id: int
+    domain_score: float
 
 
 class SelectionStrategy(ABC):
