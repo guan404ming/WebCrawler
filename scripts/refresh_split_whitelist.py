@@ -147,7 +147,7 @@ def main() -> None:
                    help="window for --top-error-rate (default 7)")
     p.add_argument("--min-attempts", type=int, default=10000,
                    help="--top-error-rate filter: min total attempts (default 10000)")
-    p.add_argument("--min-fetch-ok", type=int, default=10000)
+    p.add_argument("--min-fetch-ok", type=int, default=100)
     p.add_argument("--execute", action="store_true",
                    help="apply INSERT/DELETE to shard_split_subdomain")
     args = p.parse_args()
