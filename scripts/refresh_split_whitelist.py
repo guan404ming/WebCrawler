@@ -52,7 +52,6 @@ INGEST_CFG = REPO / "containers/scheduler_ingest/config/ingest.yaml"
 HOST_EXTRACT = "LOWER(SUBSTRING(url FROM '^https?://([^/:]+)'))"
 ROBOTS_UA = "Scrapy"
 ROBOTS_TIMEOUT = 5.0
-MAX_REDIRECT_RATIO = 0.5
 
 
 def check_robots(host: str) -> str:
@@ -87,19 +86,17 @@ def check_apex_host(host: str) -> str:
     return f"other:{final}"
 
 
-def fetch_host_counts(cur, shard_id: int, domain_id: int) -> list[tuple[str, int, int]]:
+def fetch_host_counts(cur, shard_id: int, domain_id: int) -> list[tuple[str, int]]:
     cur.execute(
         f"""
-        SELECT {HOST_EXTRACT} AS host,
-               COUNT(*) AS ok_cnt,
-               COUNT(*) FILTER (WHERE is_redirect) AS redir_cnt
+        SELECT {HOST_EXTRACT} AS host, COUNT(*)
         FROM url_state_current_{shard_id:03d}
         WHERE domain_id = %s AND last_fetch_ok IS NOT NULL
         GROUP BY 1
         """,
         (domain_id,),
     )
-    return [(h, ok, rd) for h, ok, rd in cur.fetchall() if h]
+    return [(h, c) for h, c in cur.fetchall() if h]
 
 
 def fetch_top_error_parents(cur, n: int, days: int, min_attempts: int) -> list[str]:
@@ -121,7 +118,7 @@ def fetch_top_error_parents(cur, n: int, days: int, min_attempts: int) -> list[s
     return [r[0] for r in cur.fetchall()]
 
 
-def collect_counts(cur, parent: str) -> dict[str, tuple[int, int]]:
+def collect_counts(cur, parent: str) -> dict[str, int]:
     cur.execute(
         """
         SELECT shard_id, domain_id FROM domain_state
@@ -129,12 +126,11 @@ def collect_counts(cur, parent: str) -> dict[str, tuple[int, int]]:
         """,
         (parent, f"%.{parent}"),
     )
-    counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    counts: dict[str, int] = defaultdict(int)
     for shard_id, domain_id in cur.fetchall():
-        for host, ok, rd in fetch_host_counts(cur, shard_id, domain_id):
-            counts[host][0] += ok
-            counts[host][1] += rd
-    return {h: (ok, rd) for h, (ok, rd) in counts.items()}
+        for host, cnt in fetch_host_counts(cur, shard_id, domain_id):
+            counts[host] += cnt
+    return counts
 
 
 def main() -> None:
@@ -158,7 +154,7 @@ def main() -> None:
     ingest = load_yaml(str(INGEST_CFG))
     overrides = (ingest.get("router") or {}).get("domain_overrides") or {}
 
-    counts: dict[str, tuple[int, int]] = {}
+    counts: dict[str, int] = {}
     with psycopg2.connect(**CRAWLERDB) as conn:
         current = load_split_subdomains(conn)
         with conn.cursor() as cur:
@@ -175,21 +171,20 @@ def main() -> None:
 
             parent_set = set(parents)
             for parent in parents:
-                for host, (ok, rd) in collect_counts(cur, parent).items():
+                for host, cnt in collect_counts(cur, parent).items():
                     if host in parent_set:
                         continue  # apex
-                    prev = counts.get(host, (0, 0))
-                    counts[host] = (prev[0] + ok, prev[1] + rd)
+                    counts[host] = counts.get(host, 0) + cnt
 
         candidates = sorted(
-            ((h, ok, rd) for h, (ok, rd) in counts.items() if ok >= args.min_fetch_ok or h in current),
-            key=lambda r: r[1], reverse=True,
+            ((h, c) for h, c in counts.items() if c >= args.min_fetch_ok or h in current),
+            key=lambda kv: kv[1], reverse=True,
         )
 
         robots: dict[str, str] = {}
         apex: dict[str, str] = {}
         if candidates:
-            hosts = [h for h, _, _ in candidates]
+            hosts = [h for h, _ in candidates]
             with ThreadPoolExecutor(max_workers=8) as ex:
                 for host, status in zip(hosts, ex.map(check_robots, hosts)):
                     robots[host] = status
@@ -197,24 +192,21 @@ def main() -> None:
                     apex[host] = status
 
         add, remove, keep = [], [], []
-        for host, ok, rd in candidates:
+        for host, cnt in candidates:
             in_list = host in current
             rb = robots.get(host)
             ap = apex.get(host)
-            redir_ratio = rd / ok if ok else 0.0
             if in_list and rb == "blocked":
-                remove.append((host, ok, rd))
+                remove.append((host, cnt))
             elif in_list:
-                keep.append((host, ok, rd))
-            elif (ok >= args.min_fetch_ok and rb == "ok"
-                  and ap == "self" and redir_ratio < MAX_REDIRECT_RATIO):
-                add.append((host, ok, rd))
+                keep.append((host, cnt))
+            elif cnt >= args.min_fetch_ok and rb == "ok" and ap == "self":
+                add.append((host, cnt))
 
-        def _print(label: str, sign: str, items: list[tuple[str, int, int]]) -> None:
+        def _print(label: str, sign: str, items: list[tuple[str, int]]) -> None:
             print(f"{label} ({len(items)}):")
-            for host, ok, rd in items:
-                ratio = rd / ok if ok else 0.0
-                print(f"  {sign} {host:55s} fetch_ok={ok:>10,}  redir={ratio:>5.1%}"
+            for host, cnt in items:
+                print(f"  {sign} {host:55s} fetch_ok={cnt:>10,}"
                       f"  robots={robots.get(host, '?')}  apex={apex.get(host, '?')}")
             print()
 
@@ -222,21 +214,21 @@ def main() -> None:
         _print("REMOVE", "-", remove)
         _print("KEEP", "=", keep)
 
-        new_counts = {h: (ok, rd) for h, (ok, rd) in counts.items() if h not in current}
+        new_counts = {h: c for h, c in counts.items() if h not in current}
         discovered = len(new_counts)
-        above_threshold = sum(1 for ok, _ in new_counts.values() if ok >= args.min_fetch_ok)
-        add_ok = sum(ok for _, ok, _ in add)
-        keep_ok = sum(ok for _, ok, _ in keep)
+        above_threshold = sum(1 for c in new_counts.values() if c >= args.min_fetch_ok)
+        add_ok = sum(c for _, c in add)
+        keep_ok = sum(c for _, c in keep)
         pct = lambda n, d: f"{100 * n / d:.1f}%" if d else "-"
         print("analytics (excluding hosts already in whitelist):")
         print(f"  subdomains discovered under {len(parents)} parent(s): {discovered:,}")
         print(f"  passed fetch_ok >= {args.min_fetch_ok:,}: {above_threshold:,} ({pct(above_threshold, discovered)})")
-        print(f"  ADD after robots + apex + redir<{int(MAX_REDIRECT_RATIO*100)}%: {len(add):,} ({pct(len(add), above_threshold)} of above-threshold)")
+        print(f"  ADD after robots + apex: {len(add):,} ({pct(len(add), above_threshold)} of above-threshold)")
         print(f"  fetch_ok URLs newly rescued by ADD: {add_ok:,}")
         print(f"  fetch_ok URLs already covered by KEEP: {keep_ok:,}")
         print()
 
-        final = sorted((current | {h for h, _, _ in add}) - {h for h, _, _ in remove})
+        final = sorted((current | {h for h, _ in add}) - {h for h, _ in remove})
 
         if args.execute:
             if args.domain:
@@ -246,12 +238,12 @@ def main() -> None:
                 if add:
                     cur.executemany(
                         f"INSERT INTO {SPLIT_TABLE}(host) VALUES (%s) ON CONFLICT DO NOTHING",
-                        [(h,) for h, _, _ in add],
+                        [(h,) for h, _ in add],
                     )
                 if remove:
                     cur.executemany(
                         f"DELETE FROM {SPLIT_TABLE} WHERE host = %s",
-                        [(h,) for h, _, _ in remove],
+                        [(h,) for h, _ in remove],
                     )
             conn.commit()
             print(f"updated {SPLIT_TABLE}: +{len(add)} / -{len(remove)} ({len(final)} entries total)")
