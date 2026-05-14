@@ -33,6 +33,14 @@ services:
       -c max_connections=500
       -c max_wal_size=20GB
       -c checkpoint_timeout=15min
+      -c shared_buffers=16GB
+      -c effective_cache_size=128GB
+      -c work_mem=32MB
+      -c maintenance_work_mem=2GB
+      -c effective_io_concurrency=200
+      -c max_parallel_workers=16
+      -c max_parallel_workers_per_gather=4
+      -c wal_compression=on
     restart: unless-stopped
     environment:
       - POSTGRES_USER=crawler
