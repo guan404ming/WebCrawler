@@ -43,7 +43,15 @@ golden_discovery_ranker_v1:
   enabled: false
   artifact_path: "/app/artifacts/golden_discovery_ranker_v1.joblib"
   total_shards: 256
-  num_workers: 4
+  num_workers: 16
   batch_size: 1000
   scan_interval_sec: 60
   max_batches_per_shard: 4
+  # Domain-priority steering: when on, the scorer only picks unscored URLs
+  # whose domain has `domain_state.domain_score > 0` (i.e. golden-tagged),
+  # ordered domain_score DESC then first_seen ASC. When off, the scorer
+  # falls back to the legacy first_seen-ASC pool across all domains. Default
+  # off; flip on after `domain_state.domain_score` has been populated via the
+  # tier-write cron. Override per-env with
+  # GOLDEN_DISCOVERY_RANKER_V1_DOMAIN_PRIORITY_STEERING_ENABLED=true.
+  domain_priority_steering_enabled: false
