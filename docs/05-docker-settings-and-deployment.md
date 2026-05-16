@@ -52,8 +52,8 @@ Crawler-specific networking:
 - `scheduler_control`: 16 offerers + 1 accounting rolloff worker + optional Golden Discovery Ranker v1 workers
 - `scheduler_ingest`: 16 routers + 16 ingestors + 16 extractors + 1 stats aggregator
 - `crawler`: 16 spiders total:
-  - 15 fixed-QPS spiders (`crawler_id=0..6,8..15`)
-  - 1 AutoThrottle canary spider (`crawler_id=7`)
+  - 15 baseline AutoThrottle spiders (`crawler_id=0..6,8..15`)
+  - 1 independently configurable AutoThrottle canary spider (`crawler_id=7`)
 
 Total long-running app processes (excluding postgres internals):
 
@@ -61,10 +61,11 @@ Total long-running app processes (excluding postgres internals):
 - With Golden Discovery Ranker v1 enabled: `21 + 49 + 16 = 86`
 
 Crawler throttle mode is selected per supervisord program through environment
-variables. Fixed workers keep `CRAWLER_USE_AUTOTHROTTLE=false` and read
-`domain_qps.json`; the canary worker sets `CRAWLER_USE_AUTOTHROTTLE=true`.
-Use `worker_id=7` in crawler logs and dashboards to compare the canary against
-fixed workers.
+variables. All production workers currently set `CRAWLER_USE_AUTOTHROTTLE=true`.
+Workers `0..6` and `8..15` share the baseline AutoThrottle values; worker `7`
+is intentionally kept in its own program so it can be tuned independently for
+future canary experiments. Fixed-QPS mode remains available by setting
+`CRAWLER_USE_AUTOTHROTTLE=false`, which reads `domain_qps.json`.
 
 ## 5.4 Operational Configuration Coupling
 
