@@ -162,3 +162,29 @@ Shared constants:
 - `NUM_SHARDS = 256`
 - `CRAWLERDB`, `METRICDB`: psycopg2 connection kwargs
 - `SOURCE_NATURAL = 0`, `SOURCE_GOLDEN = 1`: values for `url_state_current.source`
+
+## 6.12 `update_golden_domain_scores.py`
+
+- Recurring job (intended daily; new metric batches land roughly every two weeks so daily is comfortably more frequent than needed).
+- Writes `domain_state.domain_score` from each domain's presence across `metric_batches`.
+- Tiers (highest wins):
+  - `1.0` (T0) — domain appears in every metric batch.
+  - `0.95` (T1) — domain appears in the last 2 metric batches (consecutive by batch id), and is not T0.
+  - `0.8` (T2) — domain appears in any metric batch, and is not T0 / T1.
+  - `0.0` (T3) — default; domain never appeared in a golden batch.
+- Host collapse: hosts in `metric_url` go through `libs.db.sharding.key.shard_key(host, split_subdomains)`, the same key used by the rest of the pipeline. Non-split subdomains roll up to eTLD+1; entries in `shard_split.yaml` stay as full host. This guarantees the tier is applied to the same `domain_state` row that URLs in that domain point to.
+- Idempotent: previously tier-scored rows (`domain_score IN (1.0, 0.95, 0.8)`) are reset to `0.0` before re-application, so domains that drop out of a tier are demoted correctly.
+- Whole run executes in a single transaction (`commit` on success, `rollback` on any exception).
+- Reads metricdb, writes crawlerdb (`domain_state` only). Does not touch `url_state_current_*` or `url_state_history_*`.
+
+```bash
+uv run scripts/update_golden_domain_scores.py [--dry-run]
+```
+
+Recommended scheduling: host crontab, daily.
+
+```cron
+0 3 * * * cd /app && uv run scripts/update_golden_domain_scores.py >> /var/log/golden_tier.log 2>&1
+```
+
+The job is cheap (~5–10 s end-to-end on production scale: ~14k hosts collapsed to ~13k domain keys, plus an `UPDATE ... WHERE domain = ANY(...)` against the unique `domain_state_domain_key` index), so a daily cadence is conservative.
