@@ -86,6 +86,8 @@ services:
     volumes:
       - ./:/app
       - /data/ipc:/data/ipc
+    environment:
+      - GOLDEN_DISCOVERY_RANKER_V1_INGEST_INLINE_ENABLED=true
     logging: *loki-logging
 
   crawler:
