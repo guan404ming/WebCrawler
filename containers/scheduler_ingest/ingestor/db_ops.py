@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -48,6 +48,7 @@ DOMAIN_PAUSE_BASE = {
     "HttpError 400":                         "6 hours",
     "HttpError 429":                         "1 hour",
     "TimeoutError":                          "1 hour",
+    "DownloadTimeoutError":                  "1 hour",
     "ResponseNeverReceived":                 "1 hour",
 }
 
@@ -402,17 +403,25 @@ class IngestDB:
         )
 
         # Bump domain pause for fail records on concentrated reasons, reset
-        # for any ok record. `crawl_paused_until < NOW()` guard prevents
-        # repeated fails from pushing the deadline indefinitely forward.
+        # only when ok outweighs fail in this chunk. `crawl_paused_until <
+        # NOW()` guard on bump prevents repeated fails from pushing the
+        # deadline indefinitely forward. The ok-majority requirement on
+        # reset prevents a single stale in-flight ok from wiping out a
+        # pause set by dozens of fails in the same chunk.
         pause_by_interval: dict[str, set[int]] = defaultdict(set)
-        ok_domain_ids: set[int] = set()
+        ok_counts: Counter[int] = Counter()
+        fail_counts: Counter[int] = Counter()
         for d in decoded:
             if d["is_ok"]:
-                ok_domain_ids.add(d["domain_id"])
+                ok_counts[d["domain_id"]] += 1
                 continue
+            fail_counts[d["domain_id"]] += 1
             base = _domain_pause_base(d["fail_reason"])
             if base:
                 pause_by_interval[base].add(d["domain_id"])
+        ok_domain_ids = {
+            did for did, n in ok_counts.items() if n > fail_counts.get(did, 0)
+        }
         for interval, dids in pause_by_interval.items():
             cur.execute(
                 f"""
