@@ -25,7 +25,7 @@ class IngestResult:
     fail_reason: str | None = None
 
 
-BATCH_SIZE = 500
+BATCH_SIZE = 2000
 
 # Catches already-queued oversized urls that bypassed the spider-side filter.
 MAX_URL_LEN = 2500
