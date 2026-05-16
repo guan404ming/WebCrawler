@@ -105,7 +105,18 @@ class GoldenDiscoveryRankerService:
                     rows,
                     page_size=len(rows),
                 )
-                return len(rows)
+                scored = len(rows)
+
+        logger.info(
+            "golden_discovery_ranker_v1.score_batch",
+            extra={
+                "event": "golden_discovery_ranker_v1.score_batch",
+                "worker_id": self.cfg.worker_id,
+                "shard_id": shard_id,
+                "scored_urls": scored,
+            },
+        )
+        return scored
 
     def run_once(self) -> dict[str, int]:
         totals = {"scored_urls": 0, "scored_batches": 0}

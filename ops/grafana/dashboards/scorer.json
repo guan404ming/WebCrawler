@@ -1,0 +1,222 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": true,
+  "panels": [
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "description": "Aggregate background scorer throughput across all workers, 30-minute moving average to smooth over the ~9-minute run_once cadence.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 9, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value"
+      },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": {"type": "loki", "uid": "loki"},
+          "expr": "sum(rate({service=\"golden_discovery_ranker_v1\", event=\"golden_discovery_ranker_v1.run_once\"} | json | unwrap scored_urls [30m]))",
+          "instant": false,
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "title": "Background scoring rate (urls / per sec)",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "description": "URLs scored per interval, per scorer worker.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "linear", "showPoints": "never", "spanNulls": true},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 9, "w": 9, "x": 6, "y": 0},
+      "id": 2,
+      "options": {
+        "legend": {"calcs": ["sum", "lastNotNull"], "displayMode": "table", "placement": "right", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "loki", "uid": "loki"},
+          "expr": "sum by (worker_id) (sum_over_time({service=\"golden_discovery_ranker_v1\", worker_id=~\"$scorer_id\", event=\"golden_discovery_ranker_v1.run_once\"} | json | unwrap scored_urls [$__interval]))",
+          "legendFormat": "scorer_{{worker_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Scored URLs per worker",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "description": "Number of run_once cycles completed per worker. Steady cadence implies the scorer isn't stalled.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 0, "lineInterpolation": "linear", "showPoints": "never", "spanNulls": true},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 9, "w": 9, "x": 15, "y": 0},
+      "id": 3,
+      "options": {
+        "legend": {"calcs": ["sum", "lastNotNull"], "displayMode": "table", "placement": "right", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "loki", "uid": "loki"},
+          "expr": "sum by (worker_id) (count_over_time({service=\"golden_discovery_ranker_v1\", worker_id=~\"$scorer_id\", event=\"golden_discovery_ranker_v1.run_once\"} | json [$__interval]))",
+          "legendFormat": "scorer_{{worker_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "run_once cycles per worker",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "description": "URLs scored per shard, summed across all workers. Requires scorer to emit the golden_discovery_ranker_v1.score_batch event (added with shard-level logging change in scorer/service.py).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "linear", "showPoints": "never", "spanNulls": true},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 9},
+      "id": 4,
+      "options": {
+        "legend": {"calcs": ["sum", "lastNotNull"], "displayMode": "table", "placement": "right", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "loki", "uid": "loki"},
+          "expr": "sum by (shard_id) (sum_over_time({service=\"golden_discovery_ranker_v1\", event=\"golden_discovery_ranker_v1.score_batch\"} | json | unwrap scored_urls [$__interval]))",
+          "legendFormat": "shard_{{shard_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Scored URLs per shard",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "description": "Per-shard totals over the dashboard time range, sorted by URLs scored.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {"align": "auto", "cellOptions": {"type": "auto"}},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 11, "w": 24, "x": 0, "y": 19},
+      "id": 5,
+      "options": {
+        "showHeader": true,
+        "sortBy": [{"desc": true, "displayName": "scored_urls"}]
+      },
+      "targets": [
+        {
+          "datasource": {"type": "loki", "uid": "loki"},
+          "expr": "sum by (shard_id) (sum_over_time({service=\"golden_discovery_ranker_v1\", event=\"golden_discovery_ranker_v1.score_batch\"} | json | unwrap scored_urls [$__range]))",
+          "instant": true,
+          "legendFormat": "shard_{{shard_id}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "loki", "uid": "loki"},
+          "expr": "sum by (shard_id) (count_over_time({service=\"golden_discovery_ranker_v1\", event=\"golden_discovery_ranker_v1.score_batch\"} | json [$__range]))",
+          "instant": true,
+          "legendFormat": "shard_{{shard_id}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Shard scoring summary",
+      "transformations": [
+        {"id": "labelsToFields", "options": {"mode": "columns"}},
+        {"id": "joinByField", "options": {"byField": "shard_id", "mode": "outer"}},
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {"Time": true, "Time 1": true, "Time 2": true},
+            "indexByName": {"shard_id": 0, "Value #A": 1, "Value #B": 2},
+            "renameByName": {"Value #A": "scored_urls", "Value #B": "score_batches"}
+          }
+        }
+      ],
+      "type": "table"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["scorer", "loki"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": false, "text": "All", "value": "$__all"},
+        "datasource": {"type": "loki", "uid": "loki"},
+        "definition": "label_values({service=\"golden_discovery_ranker_v1\"}, worker_id)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "scorer_id",
+        "multi": true,
+        "name": "scorer_id",
+        "options": [],
+        "query": {"label": "worker_id", "stream": "{service=\"golden_discovery_ranker_v1\"}", "type": 1},
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {"from": "now-3h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "Scorer (Loki)",
+  "uid": "scorer",
+  "version": 1,
+  "weekStart": ""
+}
