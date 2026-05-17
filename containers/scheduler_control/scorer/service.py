@@ -21,6 +21,12 @@ class GoldenDiscoveryRankerConfig:
     batch_size: int
     scan_interval_sec: int
     max_batches_per_shard: int
+    # Domain-priority steering: when enabled, each batch only picks unscored
+    # URLs from domains with `domain_state.domain_score > 0` (i.e. domains
+    # that have appeared in a golden batch). Ordered by domain_score DESC so
+    # higher-tier golden domains are scored first. When disabled, the scorer
+    # keeps the legacy first_seen-ASC behavior.
+    domain_priority_steering_enabled: bool = False
 
 
 class GoldenDiscoveryRankerService:
@@ -70,18 +76,39 @@ class GoldenDiscoveryRankerService:
 
         with self.Session.begin() as sess:
             with sess.connection().connection.cursor() as cur:
-                cur.execute(
-                    f"""
-                    SELECT url
-                    FROM {table}
-                    WHERE should_crawl = TRUE
-                      AND url_score_updated_at IS NULL
-                    ORDER BY first_seen ASC NULLS LAST
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT %s
-                    """,
-                    (self.cfg.batch_size,),
-                )
+                if self.cfg.domain_priority_steering_enabled:
+                    # Score only URLs whose domain has a golden-tier score.
+                    # `d.domain_score > 0` is the gate — domain_state default
+                    # is 0.0, so this picks up exactly the rows that the
+                    # tier-write cron has tagged.
+                    cur.execute(
+                        f"""
+                        SELECT u.url
+                        FROM {table} u
+                        JOIN domain_state d ON d.domain_id = u.domain_id
+                        WHERE u.should_crawl = TRUE
+                          AND u.url_score_updated_at IS NULL
+                          AND d.domain_score > 0
+                        ORDER BY d.domain_score DESC NULLS LAST,
+                                 u.first_seen ASC NULLS LAST
+                        FOR UPDATE OF u SKIP LOCKED
+                        LIMIT %s
+                        """,
+                        (self.cfg.batch_size,),
+                    )
+                else:
+                    cur.execute(
+                        f"""
+                        SELECT url
+                        FROM {table}
+                        WHERE should_crawl = TRUE
+                          AND url_score_updated_at IS NULL
+                        ORDER BY first_seen ASC NULLS LAST
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT %s
+                        """,
+                        (self.cfg.batch_size,),
+                    )
                 urls = [row[0] for row in cur.fetchall()]
                 if not urls:
                     return 0

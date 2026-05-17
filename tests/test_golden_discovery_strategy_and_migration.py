@@ -258,6 +258,54 @@ class GoldenDiscoveryRankerServiceTest(unittest.TestCase):
         self.assertEqual(page_size, 2)
 
 
+def _make_steering_service(cursor, *, steering: bool, batch_size: int = 100):
+    return GoldenDiscoveryRankerService(
+        cfg=GoldenDiscoveryRankerConfig(
+            total_shards=256,
+            num_workers=1,
+            worker_id=0,
+            batch_size=batch_size,
+            scan_interval_sec=60,
+            max_batches_per_shard=1,
+            domain_priority_steering_enabled=steering,
+        ),
+        Session=_FakeScorerSessionFactory(cursor),
+        scorer=_FakeScorer(),
+    )
+
+
+class GoldenDiscoveryRankerSteeringTest(unittest.TestCase):
+    def test_steering_disabled_uses_legacy_first_seen_query(self):
+        cursor = _FakeCursor()
+        service = _make_steering_service(cursor, steering=False, batch_size=1000)
+
+        with patch.object(scorer_service, "execute_values", lambda *a, **kw: None):
+            service._score_batch(7)
+
+        select_sql, select_params = cursor.executed[0]
+        self.assertIn("FROM url_state_current_007", select_sql)
+        self.assertIn("ORDER BY first_seen ASC NULLS LAST", select_sql)
+        self.assertNotIn("domain_state", select_sql)
+        self.assertNotIn("domain_score", select_sql)
+        self.assertEqual(select_params, (1000,))
+
+    def test_steering_enabled_joins_domain_state_and_filters_by_score(self):
+        cursor = _FakeCursor()
+        service = _make_steering_service(cursor, steering=True, batch_size=1000)
+
+        with patch.object(scorer_service, "execute_values", lambda *a, **kw: None):
+            service._score_batch(7)
+
+        select_sql, select_params = cursor.executed[0]
+        self.assertIn("FROM url_state_current_007 u", select_sql)
+        self.assertIn("JOIN domain_state d ON d.domain_id = u.domain_id", select_sql)
+        self.assertIn("d.domain_score > 0", select_sql)
+        self.assertIn("ORDER BY d.domain_score DESC NULLS LAST", select_sql)
+        self.assertIn("u.first_seen ASC NULLS LAST", select_sql)
+        self.assertIn("FOR UPDATE OF u SKIP LOCKED", select_sql)
+        self.assertEqual(select_params, (1000,))
+
+
 class _FakeInlineRanker:
     def __init__(self):
         self.calls = []

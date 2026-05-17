@@ -111,6 +111,10 @@ def main() -> None:
             f"{ENV_PREFIX}_MAX_BATCHES_PER_SHARD",
             int(scorer_raw.get("max_batches_per_shard", 4)),
         ),
+        domain_priority_steering_enabled=_env_bool(
+            f"{ENV_PREFIX}_DOMAIN_PRIORITY_STEERING_ENABLED",
+            bool(scorer_raw.get("domain_priority_steering_enabled", False)),
+        ),
     )
 
     svc = GoldenDiscoveryRankerService(cfg=cfg, Session=Session, scorer=scorer)
