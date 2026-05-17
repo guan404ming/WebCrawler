@@ -17,7 +17,7 @@ uv run scripts/migrate_add_source.py [--dry-run]
 
 - Recurring job (intended weekly).
 - Force-injects golden set URLs older than 4 weeks from metricdb into crawlerdb.
-- Shard resolution: goes through `libs.db.sharding.key.compute_shard` (single source of truth), which honors `domain_overrides` in `ingest.yaml` and the `shard_split_subdomain` DB table; overrides for split eTLD+1s are stripped automatically.
+- Shard resolution: goes through `libs.db.sharding.key.compute_shard` (single source of truth), which honors `domain_overrides` in `ingest.yaml` and `split_etld1` in `shard_split.yaml`; overrides for split eTLD+1s are stripped automatically.
 - Writes to `domain_state`, `url_state_current_{shard}`, `url_state_history_{shard}`.
 - Existing rows are flipped to `source = 1` so golden set membership is identifiable. New rows are also mirrored into history (matches `db_ops.process_link`).
 - Does not write to metricdb.
@@ -134,7 +134,7 @@ uv run scripts/migrate_merge_subdomain_rows.py --execute
 ## 6.9 `migrate_shard_split.py`
 
 - Recurring / on-demand.
-- For each eTLD+1 implied by hosts in the `shard_split_subdomain` DB table, moves `url_state_current_{old}`, `url_state_history_{old}`, and `url_event_counter_{old}` rows to new per-hostname shards (`md5(hostname) % 256`). `domain_state` is upserted per hostname with the new `shard_id`.
+- For each eTLD+1 listed in `containers/scheduler_ingest/config/shard_split.yaml`, moves `url_state_current_{old}`, `url_state_history_{old}`, and `url_event_counter_{old}` rows to new per-hostname shards (`md5(hostname) % 256`). `domain_state` is upserted per hostname with the new `shard_id`.
 - `content_feature_*` and `domain_stats_daily` are not migrated (feature rows regenerate on next fetch; daily stats restart per new host row).
 - Default is `--dry-run` (reports per-hostname row counts and projected new-shard distribution). Pass `--execute` to perform the move. Batches of 5000 per table, idempotent on conflict.
 - Pre-req for `--execute`: pause `scheduler_ingest` (router + ingestor) for the affected eTLD+1, or live writes race the migration.
@@ -162,3 +162,29 @@ Shared constants:
 - `NUM_SHARDS = 256`
 - `CRAWLERDB`, `METRICDB`: psycopg2 connection kwargs
 - `SOURCE_NATURAL = 0`, `SOURCE_GOLDEN = 1`: values for `url_state_current.source`
+
+## 6.12 `update_golden_domain_scores.py`
+
+- Recurring job (intended daily; new metric batches land roughly every two weeks so daily is comfortably more frequent than needed).
+- Writes `domain_state.domain_score` from each domain's presence across `metric_batches`.
+- Tiers (highest wins):
+  - `1.0` (T0) — domain appears in every metric batch.
+  - `0.95` (T1) — domain appears in the last 2 metric batches (consecutive by batch id), and is not T0.
+  - `0.8` (T2) — domain appears in any metric batch, and is not T0 / T1.
+  - `0.0` (T3) — default; domain never appeared in a golden batch.
+- Host collapse: hosts in `metric_url` go through `libs.db.sharding.key.shard_key(host, split_subdomains)`, the same key used by the rest of the pipeline. Non-split subdomains roll up to eTLD+1; entries in `shard_split.yaml` stay as full host. This guarantees the tier is applied to the same `domain_state` row that URLs in that domain point to.
+- Idempotent: previously tier-scored rows (`domain_score IN (1.0, 0.95, 0.8)`) are reset to `0.0` before re-application, so domains that drop out of a tier are demoted correctly.
+- Whole run executes in a single transaction (`commit` on success, `rollback` on any exception).
+- Reads metricdb, writes crawlerdb (`domain_state` only). Does not touch `url_state_current_*` or `url_state_history_*`.
+
+```bash
+uv run scripts/update_golden_domain_scores.py [--dry-run]
+```
+
+Recommended scheduling: host crontab, daily.
+
+```cron
+0 3 * * * cd /app && uv run scripts/update_golden_domain_scores.py >> /var/log/golden_tier.log 2>&1
+```
+
+The job is cheap (~5–10 s end-to-end on production scale: ~14k hosts collapsed to ~13k domain keys, plus an `UPDATE ... WHERE domain = ANY(...)` against the unique `domain_state_domain_key` index), so a daily cadence is conservative.
