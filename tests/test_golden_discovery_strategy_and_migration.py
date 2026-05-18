@@ -76,14 +76,22 @@ class GoldenDiscoveryMigrationSqlTest(unittest.TestCase):
 
 
 class _FakeResult:
+    def __init__(self, rows=None):
+        if rows is None:
+            rows = [SimpleNamespace(domain_id=7, url="https://example.com/a")]
+        self._rows = rows
+
     def fetchall(self):
-        return [SimpleNamespace(domain_id=7, url="https://example.com/a")]
+        return self._rows
 
 
 class _FakeOffererSession:
-    def __init__(self):
+    def __init__(self, rows=None):
         self.calls = []
         self.committed = False
+        # If `rows` is a list-of-lists, return one batch per execute() call.
+        # Otherwise the same rows are returned for every call.
+        self._rows = rows
 
     def __enter__(self):
         return self
@@ -93,7 +101,12 @@ class _FakeOffererSession:
 
     def execute(self, sql, params):
         self.calls.append((str(sql), params))
-        return _FakeResult()
+        if self._rows is None:
+            return _FakeResult()
+        if self._rows and isinstance(self._rows[0], list):
+            idx = min(len(self.calls) - 1, len(self._rows) - 1)
+            return _FakeResult(self._rows[idx])
+        return _FakeResult(self._rows)
 
     def commit(self):
         self.committed = True
@@ -140,6 +153,152 @@ class GoldenDiscoveryOffererStrategyTest(unittest.TestCase):
         self.assertEqual(params["exclude"], (11, 22))
         self.assertEqual(params["per_domain_cap"], 2)
         self.assertEqual(params["max_domains"], 5)
+
+
+class GoldenDiscoveryPeekGlobalCandidatesTest(unittest.TestCase):
+    def test_peek_queries_domain_state_with_global_order(self):
+        rows = [
+            SimpleNamespace(domain_id=42, shard_id=3, domain_score=0.9),
+            SimpleNamespace(domain_id=17, shard_id=11, domain_score=0.5),
+        ]
+        session = _FakeOffererSession(rows=rows)
+        strategy = GoldenDiscoveryRankerV1Strategy(Session=_FakeOffererSessionFactory(session))
+
+        candidates = strategy.peek_global_candidates(
+            limit=10, exclude_domain_ids={99, 100},
+            shard_start=0, shard_end=15,
+        )
+
+        self.assertEqual(
+            [(c.domain_id, c.shard_id, c.domain_score) for c in candidates],
+            [(42, 3, 0.9), (17, 11, 0.5)],
+        )
+
+        sql, params = session.calls[0]
+        self.assertIn("FROM domain_state d", sql)
+        self.assertIn(
+            "d.shard_id BETWEEN :shard_start AND :shard_end", sql,
+        )
+        self.assertIn(
+            "d.crawl_paused_until IS NULL OR d.crawl_paused_until <= NOW()", sql,
+        )
+        self.assertIn(
+            "ORDER BY d.domain_score DESC NULLS LAST, d.domain_id", sql,
+        )
+        self.assertIn("LIMIT :limit", sql)
+        self.assertNotIn("FOR UPDATE", sql)
+        self.assertEqual(params["limit"], 10)
+        self.assertEqual(params["shard_start"], 0)
+        self.assertEqual(params["shard_end"], 15)
+        self.assertEqual(sorted(params["exclude_arr"]), [99, 100])
+
+    def test_peek_emits_per_shard_exists_subqueries(self):
+        session = _FakeOffererSession(rows=[])
+        strategy = GoldenDiscoveryRankerV1Strategy(Session=_FakeOffererSessionFactory(session))
+
+        strategy.peek_global_candidates(
+            limit=5, exclude_domain_ids=set(),
+            shard_start=2, shard_end=4,
+        )
+
+        sql, _ = session.calls[0]
+        # Each shard in the range has a guarded EXISTS subquery pointing at its
+        # url_state_current_NNN partition. Only the matching shard's branch is
+        # evaluated per domain_state row.
+        self.assertIn(
+            "(d.shard_id = 2 AND EXISTS (SELECT 1 FROM url_state_current_002 u "
+            "WHERE u.domain_id = d.domain_id AND u.should_crawl = TRUE))",
+            sql,
+        )
+        self.assertIn(
+            "(d.shard_id = 3 AND EXISTS (SELECT 1 FROM url_state_current_003 u "
+            "WHERE u.domain_id = d.domain_id AND u.should_crawl = TRUE))",
+            sql,
+        )
+        self.assertIn(
+            "(d.shard_id = 4 AND EXISTS (SELECT 1 FROM url_state_current_004 u "
+            "WHERE u.domain_id = d.domain_id AND u.should_crawl = TRUE))",
+            sql,
+        )
+        # Shards outside the range must not appear.
+        self.assertNotIn("url_state_current_001", sql)
+        self.assertNotIn("url_state_current_005", sql)
+
+    def test_peek_returns_empty_when_limit_is_zero(self):
+        session = _FakeOffererSession()
+        strategy = GoldenDiscoveryRankerV1Strategy(Session=_FakeOffererSessionFactory(session))
+
+        candidates = strategy.peek_global_candidates(
+            limit=0, exclude_domain_ids=set(),
+            shard_start=0, shard_end=15,
+        )
+
+        self.assertEqual(candidates, [])
+        self.assertEqual(session.calls, [])
+
+    def test_peek_returns_empty_when_shard_range_is_inverted(self):
+        session = _FakeOffererSession()
+        strategy = GoldenDiscoveryRankerV1Strategy(Session=_FakeOffererSessionFactory(session))
+
+        candidates = strategy.peek_global_candidates(
+            limit=5, exclude_domain_ids=set(),
+            shard_start=10, shard_end=5,
+        )
+
+        self.assertEqual(candidates, [])
+        self.assertEqual(session.calls, [])
+
+    def test_peek_handles_empty_exclude_set(self):
+        session = _FakeOffererSession(rows=[])
+        strategy = GoldenDiscoveryRankerV1Strategy(Session=_FakeOffererSessionFactory(session))
+
+        candidates = strategy.peek_global_candidates(
+            limit=5, exclude_domain_ids=set(),
+            shard_start=0, shard_end=15,
+        )
+
+        self.assertEqual(candidates, [])
+        _, params = session.calls[0]
+        self.assertEqual(params["exclude_arr"], [])
+
+
+class GoldenDiscoveryClaimDomainUrlsTest(unittest.TestCase):
+    def test_claim_scopes_to_one_domain_and_updates_state(self):
+        rows = [
+            SimpleNamespace(url="https://example.com/a"),
+            SimpleNamespace(url="https://example.com/b"),
+        ]
+        session = _FakeOffererSession(rows=rows)
+        strategy = GoldenDiscoveryRankerV1Strategy(Session=_FakeOffererSessionFactory(session))
+
+        urls = strategy.claim_domain_urls(
+            shard_id=3, domain_id=42, per_domain_cap=10
+        )
+
+        self.assertEqual(urls, ["https://example.com/a", "https://example.com/b"])
+        self.assertTrue(session.committed)
+
+        sql, params = session.calls[0]
+        self.assertIn("FROM url_state_current_003", sql)
+        self.assertIn("INSERT INTO url_event_counter_003", sql)
+        self.assertIn("WHERE should_crawl = TRUE AND domain_id = :domain_id", sql)
+        self.assertIn("FOR UPDATE SKIP LOCKED", sql)
+        self.assertIn("UPDATE url_state_current_003 x", sql)
+        self.assertIn("should_crawl = FALSE", sql)
+        self.assertIn("last_scheduled = CURRENT_TIMESTAMP", sql)
+        self.assertNotIn("eligible_domains", sql)  # not the multi-domain CTE
+        self.assertEqual(params["domain_id"], 42)
+        self.assertEqual(params["per_domain_cap"], 10)
+
+    def test_claim_returns_empty_for_non_positive_cap(self):
+        session = _FakeOffererSession()
+        strategy = GoldenDiscoveryRankerV1Strategy(Session=_FakeOffererSessionFactory(session))
+
+        self.assertEqual(
+            strategy.claim_domain_urls(shard_id=3, domain_id=42, per_domain_cap=0),
+            [],
+        )
+        self.assertEqual(session.calls, [])
 
 
 class _FakeCursor:
