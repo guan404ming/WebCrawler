@@ -144,6 +144,8 @@ def main() -> None:
     p.add_argument("--min-attempts", type=int, default=10000,
                    help="--top-error-rate filter: min total attempts (default 10000)")
     p.add_argument("--min-fetch-ok", type=int, default=100)
+    p.add_argument("--max-add", type=int, default=10,
+                   help="cap ADDs per run, top by fetch_ok (default 10)")
     p.add_argument("--execute", action="store_true",
                    help="apply INSERT/DELETE to shard_split_subdomain")
     args = p.parse_args()
@@ -210,6 +212,11 @@ def main() -> None:
                       f"  robots={robots.get(host, '?')}  apex={apex.get(host, '?')}")
             print()
 
+        deferred: list[tuple[str, int]] = []
+        if len(add) > args.max_add:
+            deferred = add[args.max_add:]
+            add = add[:args.max_add]
+
         _print("ADD", "+", add)
         _print("REMOVE", "-", remove)
         _print("KEEP", "=", keep)
@@ -217,13 +224,17 @@ def main() -> None:
         new_counts = {h: c for h, c in counts.items() if h not in current}
         discovered = len(new_counts)
         above_threshold = sum(1 for c in new_counts.values() if c >= args.min_fetch_ok)
+        eligible = len(add) + len(deferred)
         add_ok = sum(c for _, c in add)
         keep_ok = sum(c for _, c in keep)
+        deferred_ok = sum(c for _, c in deferred)
         pct = lambda n, d: f"{100 * n / d:.1f}%" if d else "-"
         print("analytics (excluding hosts already in whitelist):")
         print(f"  subdomains discovered under {len(parents)} parent(s): {discovered:,}")
         print(f"  passed fetch_ok >= {args.min_fetch_ok:,}: {above_threshold:,} ({pct(above_threshold, discovered)})")
-        print(f"  ADD after robots + apex: {len(add):,} ({pct(len(add), above_threshold)} of above-threshold)")
+        print(f"  eligible after robots + apex: {eligible:,} ({pct(eligible, above_threshold)} of above-threshold)")
+        print(f"  ADD this run (max {args.max_add}): {len(add):,}")
+        print(f"  deferred to next run: {len(deferred):,} ({deferred_ok:,} fetch_ok URLs)")
         print(f"  fetch_ok URLs newly rescued by ADD: {add_ok:,}")
         print(f"  fetch_ok URLs already covered by KEEP: {keep_ok:,}")
         print()
