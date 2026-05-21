@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir \
     tldextract==5.1.1 \
     pyyaml==6.0.2 \
     psycopg2-binary==2.9.11 \
+    sqlalchemy==2.0.44 \
     python-json-logger==2.0.7
 
 COPY containers/sitemap_patroller/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
