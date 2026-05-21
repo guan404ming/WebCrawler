@@ -1,7 +1,6 @@
-# discovery_source_type values for the "new outlink" IPC record. 0 = unknown,
-# 1 = parent-page outlink (router default), 2 = sitemap <loc> entry.
-# See docs/03-data-flow-and-ipc.md §3.3.
-DISCOVERY_SOURCE_PAGE_OUTLINK = 1
-DISCOVERY_SOURCE_SITEMAP = 2
+# DISCOVERY_SOURCE_* constants moved to libs/ipc/new_link_record.py so the
+# router and the patroller share one definition. Import from there:
+#
+#     from libs.ipc.new_link_record import DISCOVERY_SOURCE_SITEMAP
 
 SITEMAP_USER_AGENT = "WebCrawler-SitemapPatrol/1.0 (+https://github.com/NTU-CSIE5376/WebCrawler)"

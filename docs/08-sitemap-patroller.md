@@ -80,6 +80,28 @@ cadence reasoning).
                                                                  (no downstream changes)
 ```
 
+### 8.2.0 Shared routing pieces
+
+Both the patrol worker and the scheduler_ingest `router` need to translate
+a URL into the same `(domain_key, shard_id, ingestor_id)` triple, and both
+need to emit the same JSON record shape. Those two pieces live in shared
+libs so the two callers can't drift:
+
+- `libs/db/sharding/router.py:ShardRouter` — the sole owner of the
+  `host → shard_id → ingestor_id` math. `patrol/main.py` constructs one
+  at startup from `ingest.yaml`'s `router.num_shards`,
+  `router.shards_per_ingestor`, `router.domain_overrides`, and the
+  `shard_split_subdomain` DB whitelist — exactly what the router itself
+  reads.
+- `libs/ipc/new_link_record.py:build_new_link_record(...)` — the canonical
+  builder for the "new outlink candidate" record schema documented in
+  `docs/03-data-flow-and-ipc.md` §3.3. Router calls it with
+  `discovery_source_type=DISCOVERY_SOURCE_PAGE_OUTLINK (=1)`; patrol calls
+  it with `DISCOVERY_SOURCE_SITEMAP (=2)`.
+
+If a future schema change is needed (new field, renamed field), changing
+those two files updates both writers at once.
+
 ### 8.2.1 Why one container, two workers
 
 Discover and patrol share a Postgres connection profile, the same
@@ -187,7 +209,7 @@ Notable behaviors:
 | File | Purpose |
 |------|---------|
 | `containers/sitemap_patroller/patrol/main.py` | argparse, `libs.obslog.configure(service="sitemap_patrol")`, while-loop. Loads `ingest_config_path` via `load_sharding_config` for the same `overrides` + `split_subdomains` the router uses. |
-| `containers/sitemap_patroller/patrol/service.py` | `PatrolConfig`, `run_once`, `process_row`, `fetch_sitemap` (conditional GET), `parse_sitemap`, `IngestorEmitter`, `build_new_record`, `ensure_domain`. |
+| `containers/sitemap_patroller/patrol/service.py` | `PatrolConfig` (holds a shared `ShardRouter`), `run_once`, `process_row` (uses the shared `build_new_link_record`), `fetch_sitemap` (conditional GET), `parse_sitemap`, `IngestorEmitter`, `ensure_domain`. |
 
 Notable behaviors:
 

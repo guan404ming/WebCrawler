@@ -14,18 +14,20 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Set
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 
 import psycopg2
 
-from containers.sitemap_patroller import DISCOVERY_SOURCE_SITEMAP, SITEMAP_USER_AGENT
-from libs.db.sharding.key import compute_shard, shard_key
+from containers.sitemap_patroller import SITEMAP_USER_AGENT
+from libs.db.sharding.router import ShardRouter, host_of
 from libs.ipc.folder_reader import current_interval
 from libs.ipc.jsonio import append_jsonl
+from libs.ipc.new_link_record import (
+    DISCOVERY_SOURCE_SITEMAP,
+    build_new_link_record,
+)
 
 
 logger = logging.getLogger("sitemap_patrol")
@@ -41,10 +43,9 @@ class PatrolConfig:
     dsn: str
     ingestor_dir_template: str
     interval_minutes: int
-    num_shards: int
-    shards_per_ingestor: int
-    domain_overrides: dict[str, int]
-    split_subdomains: Set[str]
+    # Shared with the router via libs.db.sharding.router.ShardRouter — guarantees
+    # we route URLs to the same shard / ingestor the router would.
+    sharder: ShardRouter
     due_interval_hours: int
     batch_limit: int
     global_delay_sec: float
@@ -114,15 +115,25 @@ def parse_sitemap(body: bytes) -> tuple[str, list[str]]:
 # ----- DB -----
 
 def select_due_rows(cur, due_interval_hours: int, limit: int) -> list[dict]:
+    # DISTINCT ON (domain_id) returns at most one row per domain so the
+    # per-run cooldown in run_once() can't reject 99% of the batch when
+    # nested sitemapindex children cluster the table by domain. The outer
+    # ORDER BY rotates fairly across domains by oldest-due first.
     cur.execute(
         """
-        SELECT ds.id, ds.sitemap_url, ds.etag, ds.last_modified,
-               ds.domain_id, dst.domain
-        FROM domain_sitemap ds
-        JOIN domain_state dst USING (domain_id)
-        WHERE ds.last_patrolled_at IS NULL
-           OR ds.last_patrolled_at < NOW() - (%s * INTERVAL '1 hour')
-        ORDER BY ds.last_patrolled_at NULLS FIRST
+        WITH per_domain_oldest AS (
+            SELECT DISTINCT ON (ds.domain_id)
+                   ds.id, ds.sitemap_url, ds.etag, ds.last_modified,
+                   ds.domain_id, dst.domain, ds.last_patrolled_at
+            FROM domain_sitemap ds
+            JOIN domain_state dst USING (domain_id)
+            WHERE ds.last_patrolled_at IS NULL
+               OR ds.last_patrolled_at < NOW() - (%s * INTERVAL '1 hour')
+            ORDER BY ds.domain_id, ds.last_patrolled_at NULLS FIRST
+        )
+        SELECT id, sitemap_url, etag, last_modified, domain_id, domain
+        FROM per_domain_oldest
+        ORDER BY last_patrolled_at NULLS FIRST
         LIMIT %s
         """,
         (due_interval_hours, limit),
@@ -210,35 +221,6 @@ class IngestorEmitter:
         append_jsonl(str(self._out_path(ingestor_id)), record)
 
 
-def build_new_record(
-    *,
-    url: str,
-    shard_id: int,
-    domain_id: int,
-    domain_score: float,
-    discovered_from: str,
-    src_is_external: bool,
-) -> dict:
-    """Matches docs/03-data-flow-and-ipc.md §3.3 'Router Output Record (new
-    outlink candidate)' with sitemap-specific discovery tagging."""
-    return {
-        "url": url,
-        "status": "new",
-        "shard_id": shard_id,
-        "domain_id": domain_id,
-        "domain_score": domain_score,
-        "discovered_from": discovered_from,
-        "discovery_source_type": DISCOVERY_SOURCE_SITEMAP,
-        "inlink_count_approx": 1,
-        "inlink_count_external": 1 if src_is_external else 0,
-        "anchor_text": None,
-    }
-
-
-def host_of(url: str) -> str:
-    return (urlparse(url).hostname or "").lower()
-
-
 # ----- per-row processing -----
 
 def process_row(
@@ -285,7 +267,7 @@ def process_row(
                    etag=headers.get("ETag"), last_modified=headers.get("Last-Modified"))
         return counters
 
-    src_domain_key = shard_key(row["domain"], cfg.split_subdomains)
+    src_domain_key = cfg.sharder.domain_key(row["domain"])
 
     if kind == "sitemapindex":
         for nested_url in locs:
@@ -296,14 +278,12 @@ def process_row(
                    etag=headers.get("ETag"), last_modified=headers.get("Last-Modified"))
         return counters
 
-    # urlset
+    # urlset — route each <loc> URL the same way the router does for outlinks.
     for loc_url in locs:
         host = host_of(loc_url)
         if not host:
             continue
-        dkey = shard_key(host, cfg.split_subdomains)
-        sid = compute_shard(host, cfg.num_shards, cfg.domain_overrides, cfg.split_subdomains)
-        iid = sid // cfg.shards_per_ingestor
+        dkey, sid, iid = cfg.sharder.route(host)
 
         cached = domain_cache.get(dkey)
         if cached is None:
@@ -311,13 +291,14 @@ def process_row(
             domain_cache[dkey] = cached
         domain_id, domain_score = cached
 
-        record = build_new_record(
+        record = build_new_link_record(
             url=loc_url,
             shard_id=sid,
             domain_id=domain_id,
             domain_score=domain_score,
             discovered_from=row["sitemap_url"],
-            src_is_external=(dkey != src_domain_key),
+            discovery_source_type=DISCOVERY_SOURCE_SITEMAP,
+            inlink_count_external=1 if dkey != src_domain_key else 0,
         )
         emitter.emit(ingestor_id=iid, record=record)
         counters["urls_emitted"] += 1

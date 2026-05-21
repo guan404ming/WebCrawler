@@ -163,9 +163,11 @@ Shared constants:
 - `CRAWLERDB`, `METRICDB`: psycopg2 connection kwargs
 - `SOURCE_NATURAL = 0`, `SOURCE_GOLDEN = 1`: values for `url_state_current.source`
 
-Sitemap-patroller-specific constants live in
-`containers/sitemap_patroller/__init__.py` (`SITEMAP_USER_AGENT`,
-`DISCOVERY_SOURCE_PAGE_OUTLINK = 1`, `DISCOVERY_SOURCE_SITEMAP = 2`).
+The `DISCOVERY_SOURCE_*` constants for the "new outlink candidate" IPC
+record live in `libs/ipc/new_link_record.py` (`DISCOVERY_SOURCE_UNKNOWN = 0`,
+`DISCOVERY_SOURCE_PAGE_OUTLINK = 1`, `DISCOVERY_SOURCE_SITEMAP = 2`). Both
+the router and the sitemap patroller import from there. Sitemap-specific
+`SITEMAP_USER_AGENT` stays in `containers/sitemap_patroller/__init__.py`.
 
 ## 6.12 `update_golden_domain_scores.py`
 

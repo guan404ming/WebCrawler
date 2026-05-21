@@ -10,6 +10,7 @@ import psycopg2
 
 from libs.config.loader import load_yaml, require
 from libs.db.sharding.key import load_sharding_config
+from libs.db.sharding.router import ShardRouter
 from libs.obslog import configure as configure_logging
 
 from .service import PatrolConfig, run_once
@@ -38,15 +39,19 @@ def _load_config(path: str) -> tuple[PatrolConfig, int]:
     finally:
         conn.close()
 
+    sharder = ShardRouter(
+        num_shards=int(require(r, "num_shards")),
+        shards_per_ingestor=int(require(r, "shards_per_ingestor")),
+        domain_overrides=overrides,
+        split_subdomains=split_subdomains,
+    )
+
     p = require(raw, "patrol")
     cfg = PatrolConfig(
         dsn=dsn,
         ingestor_dir_template=str(require(r, "ingestor_dir_template")),
         interval_minutes=int(require(r, "interval_minutes")),
-        num_shards=int(require(r, "num_shards")),
-        shards_per_ingestor=int(require(r, "shards_per_ingestor")),
-        domain_overrides=overrides,
-        split_subdomains=split_subdomains,
+        sharder=sharder,
         due_interval_hours=int(p.get("due_interval_hours", 24)),
         batch_limit=int(p.get("batch_limit", 500)),
         global_delay_sec=float(p.get("global_delay_sec", 2.0)),

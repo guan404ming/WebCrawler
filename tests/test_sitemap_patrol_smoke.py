@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import json
 
-from containers.sitemap_patroller import DISCOVERY_SOURCE_SITEMAP
 from containers.sitemap_patroller.discover import service as discover_service
 from containers.sitemap_patroller.patrol import service as patrol_service
+from libs.ipc.new_link_record import (
+    DISCOVERY_SOURCE_SITEMAP,
+    build_new_link_record,
+)
 
 
 # ----- patrol.parse_sitemap -----
@@ -94,16 +97,22 @@ def test_parse_robots_skips_relative_and_comments():
     ]
 
 
-# ----- patrol.build_new_record matches IPC contract -----
+# ----- shared build_new_link_record (libs/ipc/new_link_record.py) -----
+#
+# The router and the patroller both emit IPC records through this single
+# builder; these tests pin the schema for the sitemap-side caller. If the
+# router-side caller ever drifts, route-side parity tests in the test stack
+# will catch it.
 
-def test_build_new_record_matches_router_schema():
-    rec = patrol_service.build_new_record(
+def test_build_new_link_record_for_sitemap_matches_schema():
+    rec = build_new_link_record(
         url="https://example.com/article",
         shard_id=98,
         domain_id=123,
         domain_score=0.95,
         discovered_from="https://example.com/sitemap.xml",
-        src_is_external=False,
+        discovery_source_type=DISCOVERY_SOURCE_SITEMAP,
+        inlink_count_external=0,
     )
     assert rec["status"] == "new"
     assert rec["url"] == "https://example.com/article"
@@ -114,14 +123,16 @@ def test_build_new_record_matches_router_schema():
     assert rec["discovered_from"] == "https://example.com/sitemap.xml"
     assert rec["inlink_count_approx"] == 1
     assert rec["inlink_count_external"] == 0
+    assert rec["anchor_text"] is None
 
 
-def test_build_new_record_marks_external():
-    rec = patrol_service.build_new_record(
+def test_build_new_link_record_marks_external():
+    rec = build_new_link_record(
         url="https://cdn.example.net/img.jpg",
         shard_id=1, domain_id=2, domain_score=0.0,
         discovered_from="https://example.com/sitemap.xml",
-        src_is_external=True,
+        discovery_source_type=DISCOVERY_SOURCE_SITEMAP,
+        inlink_count_external=1,
     )
     assert rec["inlink_count_external"] == 1
 
@@ -132,10 +143,11 @@ def test_emitter_writes_to_time_bucket_folder(tmp_path):
     template = str(tmp_path / "ingestor_{id:02d}")
     emitter = patrol_service.IngestorEmitter(template, interval_minutes=10, run_tag="testtag")
 
-    rec = patrol_service.build_new_record(
+    rec = build_new_link_record(
         url="https://example.com/a", shard_id=5, domain_id=7,
         domain_score=0.95, discovered_from="https://example.com/sitemap.xml",
-        src_is_external=False,
+        discovery_source_type=DISCOVERY_SOURCE_SITEMAP,
+        inlink_count_external=0,
     )
     emitter.emit(ingestor_id=3, record=rec)
 
