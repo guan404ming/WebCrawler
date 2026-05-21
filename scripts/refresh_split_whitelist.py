@@ -36,6 +36,8 @@ import argparse
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 from urllib.robotparser import RobotFileParser
 
 import psycopg2
@@ -63,6 +65,25 @@ def check_robots(host: str) -> str:
     except Exception as e:
         return f"err:{type(e).__name__}"
     return "ok" if rp.can_fetch(ROBOTS_UA, f"https://{host}/") else "blocked"
+
+
+def check_apex_host(host: str) -> str:
+    """Return 'self' / 'parent:<final>' / 'other:<final>' / 'err:<reason>'.
+
+    Splitting a host that 301s to its parent is useless, the eventual fetch
+    still lands under the parent's shard.
+    """
+    req = Request(f"https://{host}/", method="HEAD", headers={"User-Agent": ROBOTS_UA})
+    try:
+        with urlopen(req, timeout=ROBOTS_TIMEOUT) as resp:
+            final = (urlparse(resp.url).hostname or "").lower()
+    except Exception as e:
+        return f"err:{type(e).__name__}"
+    if final == host:
+        return "self"
+    if host.endswith("." + final):
+        return f"parent:{final}"
+    return f"other:{final}"
 
 
 def fetch_host_counts(cur, shard_id: int, domain_id: int) -> list[tuple[str, int]]:
@@ -122,7 +143,9 @@ def main() -> None:
                    help="window for --top-error-rate (default 7)")
     p.add_argument("--min-attempts", type=int, default=10000,
                    help="--top-error-rate filter: min total attempts (default 10000)")
-    p.add_argument("--min-fetch-ok", type=int, default=10000)
+    p.add_argument("--min-fetch-ok", type=int, default=100)
+    p.add_argument("--max-add", type=int, default=10,
+                   help="cap ADDs per run, top by fetch_ok (default 10)")
     p.add_argument("--execute", action="store_true",
                    help="apply INSERT/DELETE to shard_split_subdomain")
     args = p.parse_args()
@@ -161,34 +184,60 @@ def main() -> None:
         )
 
         robots: dict[str, str] = {}
+        apex: dict[str, str] = {}
         if candidates:
+            hosts = [h for h, _ in candidates]
             with ThreadPoolExecutor(max_workers=8) as ex:
-                for host, status in zip(
-                    (h for h, _ in candidates),
-                    ex.map(check_robots, (h for h, _ in candidates)),
-                ):
+                for host, status in zip(hosts, ex.map(check_robots, hosts)):
                     robots[host] = status
+                for host, status in zip(hosts, ex.map(check_apex_host, hosts)):
+                    apex[host] = status
 
         add, remove, keep = [], [], []
         for host, cnt in candidates:
             in_list = host in current
             rb = robots.get(host)
+            ap = apex.get(host)
             if in_list and rb == "blocked":
                 remove.append((host, cnt))
             elif in_list:
                 keep.append((host, cnt))
-            elif cnt >= args.min_fetch_ok and rb == "ok":
+            elif cnt >= args.min_fetch_ok and rb == "ok" and ap == "self":
                 add.append((host, cnt))
 
         def _print(label: str, sign: str, items: list[tuple[str, int]]) -> None:
             print(f"{label} ({len(items)}):")
             for host, cnt in items:
-                print(f"  {sign} {host:55s} fetch_ok={cnt:>10,}  robots={robots.get(host, '?')}")
+                print(f"  {sign} {host:55s} fetch_ok={cnt:>10,}"
+                      f"  robots={robots.get(host, '?')}  apex={apex.get(host, '?')}")
             print()
+
+        deferred: list[tuple[str, int]] = []
+        if len(add) > args.max_add:
+            deferred = add[args.max_add:]
+            add = add[:args.max_add]
 
         _print("ADD", "+", add)
         _print("REMOVE", "-", remove)
         _print("KEEP", "=", keep)
+
+        new_counts = {h: c for h, c in counts.items() if h not in current}
+        discovered = len(new_counts)
+        above_threshold = sum(1 for c in new_counts.values() if c >= args.min_fetch_ok)
+        eligible = len(add) + len(deferred)
+        add_ok = sum(c for _, c in add)
+        keep_ok = sum(c for _, c in keep)
+        deferred_ok = sum(c for _, c in deferred)
+        pct = lambda n, d: f"{100 * n / d:.1f}%" if d else "-"
+        print("analytics (excluding hosts already in whitelist):")
+        print(f"  subdomains discovered under {len(parents)} parent(s): {discovered:,}")
+        print(f"  passed fetch_ok >= {args.min_fetch_ok:,}: {above_threshold:,} ({pct(above_threshold, discovered)})")
+        print(f"  eligible after robots + apex: {eligible:,} ({pct(eligible, above_threshold)} of above-threshold)")
+        print(f"  ADD this run (max {args.max_add}): {len(add):,}")
+        print(f"  deferred to next run: {len(deferred):,} ({deferred_ok:,} fetch_ok URLs)")
+        print(f"  fetch_ok URLs newly rescued by ADD: {add_ok:,}")
+        print(f"  fetch_ok URLs already covered by KEEP: {keep_ok:,}")
+        print()
 
         final = sorted((current | {h for h, _ in add}) - {h for h, _ in remove})
 
