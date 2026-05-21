@@ -78,6 +78,7 @@ Crawler worker behavior:
    - Baseline workers and the `crawler_id=7` canary currently use the same AutoThrottle values.
    - `crawler_id=7` remains a separate supervisord program so future canary parameters can be adjusted independently.
    - Fixed-QPS mode remains available through crawler settings when `CRAWLER_USE_AUTOTHROTTLE=false`.
+   - Scrapy scraper-slot backpressure defaults to `SCRAPER_SLOT_MAX_ACTIVE_SIZE=50000000` for every crawler worker.
 4. For each response:
    - if HTML/XHTML: save full content + extracted outlinks.
    - otherwise: emit failure record (`NonHTML content-type`).

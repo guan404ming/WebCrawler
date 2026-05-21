@@ -271,6 +271,9 @@ class HtmlSpider(scrapy.Spider):
                 "throttle_mode": settings.get("CRAWLER_THROTTLE_MODE", "fixed"),
                 "autothrottle_enabled": settings.getbool("AUTOTHROTTLE_ENABLED"),
                 "concurrent_requests": settings.getint("CONCURRENT_REQUESTS"),
+                "scraper_slot_max_active_size": settings.getint(
+                    "SCRAPER_SLOT_MAX_ACTIVE_SIZE"
+                ),
                 "concurrent_requests_per_domain": settings.getint(
                     "CONCURRENT_REQUESTS_PER_DOMAIN"
                 ),

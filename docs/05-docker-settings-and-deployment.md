@@ -66,6 +66,9 @@ Workers `0..6` and `8..15` share the baseline AutoThrottle values; worker `7`
 is intentionally kept in its own program so it can be tuned independently for
 future canary experiments. Fixed-QPS mode remains available by setting
 `CRAWLER_USE_AUTOTHROTTLE=false`, which reads `domain_qps.json`.
+All crawler workers default Scrapy's `SCRAPER_SLOT_MAX_ACTIVE_SIZE` to
+`50000000` bytes to avoid downloader stalls from scraper-slot backpressure; set
+`CRAWLER_SCRAPER_SLOT_MAX_ACTIVE_SIZE` to override it.
 
 ## 5.4 Operational Configuration Coupling
 
