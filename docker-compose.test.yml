@@ -9,10 +9,17 @@ name: crawler-loki-test
 #                                 should_crawl or write event rows)
 #   - crawler                    (16 spiders, writes JSONL to test IPC)
 #
-# What this deliberately does NOT run:
+# What this deliberately does NOT run in the default `up`:
 #   - scheduler_ingest (router/ingestor/extractor would WRITE to the prod DB)
 #   - accounting_rolloff         (daily DB maintenance)
 #   - postgres                   (we read prod DB; we just never write to it)
+#
+# Optional 'sitemap' profile — see the dedicated block lower in this file.
+# Brings up an isolated mock postgres + sitemap_patroller + a write-isolated
+# ingestor for testing the sitemap feature (NTU-CSIE5376/WebCrawler#30)
+# without ever writing to prod:
+#
+#   docker compose -f docker-compose.test.yml --profile sitemap up -d --build
 #
 # Isolation from prod:
 #   - Project name 'crawler-loki-test' → separate container namespace.
@@ -242,6 +249,165 @@ services:
       - ./.test-data/ipc:/data/ipc
     logging: *loki-logging
 
+  # =============================================================================
+  # Sitemap patroller test stack (profile: sitemap)
+  # =============================================================================
+  #
+  # Independent from the offerer/crawler stack above. Brings up:
+  #   - test_postgres            (mock crawlerdb — receives all writes)
+  #   - db_bootstrap             (one-shot: copies a sample of prod
+  #                               domain_state into mock, then runs the
+  #                               domain_sitemap migration on mock)
+  #   - sitemap_patroller        (discover + patrol workers, mock DSN)
+  #   - scheduler_ingest_test    (ingestor only — no router/extractor/stats
+  #                               — consumes the sitemap-produced IPC and
+  #                               writes to mock, NEVER prod)
+  #
+  # Prod DB is touched read-only ONCE by db_bootstrap (SELECT from
+  # domain_state and shard_split_subdomain). Every other write goes to
+  # test_postgres.
+  #
+  # Start (loki/grafana come up automatically because they have no profile):
+  #
+  #     docker compose -f docker-compose.test.yml --profile sitemap up -d --build
+  #
+  # Tail the patrol cycle:
+  #
+  #     docker logs -f crawler-loki-test-sitemap-patroller \
+  #         | grep -E 'discover\.done|patrol\.done|patrol\.start'
+  #
+  # Confirm the ingestor saw at least one batch:
+  #
+  #     docker logs crawler-loki-test-scheduler-ingest-test \
+  #         | grep ingest.folder_done | head
+  #
+  # End-to-end verification (counts rows in mock):
+  #
+  #     docker exec crawler-loki-test-postgres \
+  #         psql -U crawler -d crawlerdb_test -c '\dt domain_sitemap'
+  #     uv run scripts/test_verify_sitemap_e2e.py \
+  #         --mock-dsn 'postgresql://crawler:crawler@127.0.0.1:5433/crawlerdb_test'
+  #
+  # Teardown is the same `down -v --remove-orphans` line as the main stack;
+  # it also drops the postgres-test-data volume.
+
+  test_postgres:
+    image: postgres:16
+    container_name: crawler-loki-test-postgres
+    profiles: [sitemap]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crawler
+      POSTGRES_PASSWORD: crawler
+      POSTGRES_DB: crawlerdb_test
+    volumes:
+      # /docker-entrypoint-initdb.d/ runs *.sql files on FIRST start only.
+      # If you change the DDL, you must `down -v` to drop the postgres-test-data
+      # volume — otherwise the init file is skipped on subsequent boots.
+      - ./ops/test/init-mock-db.sql:/docker-entrypoint-initdb.d/01-init-schema.sql:ro
+      - postgres-test-data:/var/lib/postgresql/data
+    ports:
+      # Map to host 5433 to avoid clashing with a host-local prod postgres on 5432.
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crawler -d crawlerdb_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  db_bootstrap:
+    build:
+      context: .
+      dockerfile: containers/sitemap_patroller/Dockerfile
+    container_name: crawler-loki-test-db-bootstrap
+    profiles: [sitemap]
+    depends_on:
+      test_postgres:
+        condition: service_healthy
+    extra_hosts:
+      # Same trick scheduler_control uses to reach prod from inside a
+      # container on the DB host (see comments in control.test.yaml).
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./:/app
+    environment:
+      PYTHONPATH: /app
+    # One-shot: copies prod domain_state subset to mock, then runs the
+    # sitemap migration on mock. Exits 0 on success → other services can
+    # depend on service_completed_successfully.
+    command:
+      # scripts/ is not a package (no __init__.py), so we invoke by file path.
+      # PYTHONPATH=/app lets the script's `from libs...` imports resolve, and
+      # the script self-adds /app/scripts to sys.path for the sibling
+      # migrate_add_domain_sitemap import.
+      - python
+      - /app/scripts/test_bootstrap_mock_db.py
+      - --prod-dsn
+      - postgresql://crawler:crawler@host.docker.internal:5432/crawlerdb
+      - --mock-dsn
+      - postgresql://crawler:crawler@test_postgres:5432/crawlerdb_test
+      - --score-min
+      - "0.95"
+      - --domain-limit
+      - "20"
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  sitemap_patroller:
+    build:
+      context: .
+      dockerfile: containers/sitemap_patroller/Dockerfile
+    container_name: crawler-loki-test-sitemap-patroller
+    profiles: [sitemap]
+    init: true
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    restart: unless-stopped
+    depends_on:
+      loki:
+        condition: service_healthy
+      db_bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - ./:/app
+      - ./.test-data/ipc:/data/ipc
+      # Bind-mount the test config OVER the prod config inside the image
+      # so the patroller reads the mock DSN + fast loop intervals.
+      - ./containers/sitemap_patroller/config/sitemap.test.yaml:/app/containers/sitemap_patroller/config/sitemap.yaml:ro
+    logging: *loki-logging
+
+  scheduler_ingest_test:
+    build:
+      context: .
+      dockerfile: containers/scheduler_ingest/Dockerfile
+    container_name: crawler-loki-test-scheduler-ingest-test
+    profiles: [sitemap]
+    init: true
+    restart: unless-stopped
+    depends_on:
+      loki:
+        condition: service_healthy
+      db_bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - ./:/app
+      - ./.test-data/ipc:/data/ipc
+      # Test supervisord: runs ONLY [program:ingestor]. No router (would
+      # need crawler_NN/ inputs), no extractor, no stats_aggregator.
+      - ./ops/test/supervisord.scheduler_ingest_test.conf:/etc/supervisor/conf.d/supervisord.conf:ro
+    logging: *loki-logging
+
 volumes:
   loki-data:
   grafana-data:
+  postgres-test-data:

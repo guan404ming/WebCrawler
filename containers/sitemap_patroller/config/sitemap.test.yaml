@@ -1,0 +1,29 @@
+# Sitemap patroller config for docker-compose.test.yml.
+#
+# Points at the in-stack MOCK postgres (NOT prod). The bootstrap step
+# (scripts/test_bootstrap_mock_db.py) snapshots a sample of prod's
+# domain_state into this DB and applies the domain_sitemap migration
+# before this worker starts.
+#
+# Tuned for fast iteration: small batches, aggressive due interval, short
+# loop sleeps.
+
+postgres:
+  # `test_postgres` is the service name of the mock DB in the test compose.
+  dsn: "postgresql://crawler:crawler@test_postgres:5432/crawlerdb_test"
+
+# Same router config the test ingestor uses, so shard routing agrees.
+ingest_config_path: "/app/containers/scheduler_ingest/config/ingest.test.yaml"
+
+discover:
+  score_min: 0.95
+  domain_limit: 5             # touch only a handful of domains in test
+  global_delay_sec: 0.5
+  loop_interval_sec: 3600     # 1h — one full sweep is enough for the test
+
+patrol:
+  due_interval_hours: 0       # always due (forces re-patrol each pass)
+  batch_limit: 50             # small batches for fast cycles
+  global_delay_sec: 1.0
+  per_domain_cooldown_sec: 30
+  loop_interval_sec: 120      # 2 min between passes
