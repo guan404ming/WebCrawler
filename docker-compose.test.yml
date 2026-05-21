@@ -286,7 +286,7 @@ services:
   #     docker exec crawler-loki-test-postgres \
   #         psql -U crawler -d crawlerdb_test -c '\dt domain_sitemap'
   #     uv run scripts/test_verify_sitemap_e2e.py \
-  #         --mock-dsn 'postgresql://crawler:crawler@127.0.0.1:5433/crawlerdb_test'
+  #         --mock-dsn 'postgresql://crawler:crawler@127.0.0.1:5434/crawlerdb_test'
   #
   # Teardown is the same `down -v --remove-orphans` line as the main stack;
   # it also drops the postgres-test-data volume.
@@ -307,8 +307,10 @@ services:
       - ./ops/test/init-mock-db.sql:/docker-entrypoint-initdb.d/01-init-schema.sql:ro
       - postgres-test-data:/var/lib/postgresql/data
     ports:
-      # Map to host 5433 to avoid clashing with a host-local prod postgres on 5432.
-      - "5433:5432"
+      # Map to host 5434. The DB server already has prod crawlerdb on 5432
+      # and prod metricdb on 5433 (see scripts/constants.py), so 5434 is
+      # the first free port that won't collide.
+      - "5434:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U crawler -d crawlerdb_test"]
       interval: 5s
